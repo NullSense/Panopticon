@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::data::{AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SortMode, VisualItem, Workstream};
 use crate::integrations;
+use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
@@ -109,7 +110,12 @@ pub struct App {
     // Filter state
     pub filter_cycles: HashSet<String>,
     pub filter_priorities: HashSet<LinearPriority>,
+    pub filter_projects: HashSet<String>,
+    pub filter_assignees: HashSet<String>, // "me", "unassigned", or user IDs
     pub available_cycles: Vec<LinearCycle>,
+    pub available_projects: Vec<ProjectInfo>,
+    pub available_team_members: Vec<TeamMemberInfo>,
+    pub current_user_id: Option<String>,
     pub show_sub_issues: bool,
     pub show_completed: bool,
     pub show_canceled: bool,
@@ -198,7 +204,12 @@ impl App {
             search_excerpts: HashMap::new(),
             filter_cycles: HashSet::new(),
             filter_priorities: HashSet::new(),
+            filter_projects: HashSet::new(),
+            filter_assignees: HashSet::new(),
             available_cycles: Vec::new(),
+            available_projects: Vec::new(),
+            available_team_members: Vec::new(),
+            current_user_id: None,
             show_sub_issues: true,
             show_completed: false,
             show_canceled: false,
@@ -299,6 +310,8 @@ impl App {
             // ─────────────────────────────────────────────────────────────────
             Message::ToggleCycleFilter(idx) => self.toggle_cycle_filter(idx),
             Message::TogglePriorityFilter(priority) => self.toggle_priority_filter(priority),
+            Message::ToggleProjectFilter(idx) => self.toggle_project_filter(idx),
+            Message::ToggleAssigneeFilter(idx) => self.toggle_assignee_filter(idx),
             Message::ToggleSubIssues => self.toggle_sub_issues(),
             Message::ToggleCompletedFilter => self.toggle_completed_filter(),
             Message::ToggleCanceledFilter => self.toggle_canceled_filter(),
@@ -1507,9 +1520,47 @@ impl App {
         self.rebuild_visual_items();
     }
 
+    pub fn toggle_project_filter(&mut self, idx: usize) {
+        if let Some(project) = self.available_projects.get(idx) {
+            let id = project.id.clone();
+            if self.filter_projects.contains(&id) {
+                self.filter_projects.remove(&id);
+            } else {
+                self.filter_projects.insert(id);
+            }
+            self.apply_filters();
+            self.rebuild_visual_items();
+        }
+    }
+
+    pub fn toggle_assignee_filter(&mut self, idx: usize) {
+        // Index 0: "Me", Index 1: "Unassigned", Rest: team members
+        let id = match idx {
+            0 => "me".to_string(),
+            1 => "unassigned".to_string(),
+            _ => {
+                if let Some(member) = self.available_team_members.get(idx - 2) {
+                    member.id.clone()
+                } else {
+                    return;
+                }
+            }
+        };
+
+        if self.filter_assignees.contains(&id) {
+            self.filter_assignees.remove(&id);
+        } else {
+            self.filter_assignees.insert(id);
+        }
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
     pub fn clear_all_filters(&mut self) {
         self.filter_cycles.clear();
         self.filter_priorities.clear();
+        self.filter_projects.clear();
+        self.filter_assignees.clear();
         self.apply_filters();
         self.rebuild_visual_items();
     }
@@ -1584,6 +1635,31 @@ impl App {
                     }
                 }
 
+                // Project filter (empty = show all)
+                if !self.filter_projects.is_empty() {
+                    match &ws.linear_issue.project {
+                        Some(project_name) => {
+                            // Find project ID by name
+                            let project_id = self.available_projects
+                                .iter()
+                                .find(|p| &p.name == project_name)
+                                .map(|p| &p.id);
+                            match project_id {
+                                Some(id) if self.filter_projects.contains(id) => {}
+                                _ => return false,
+                            }
+                        }
+                        None => return false, // No project, filtered out
+                    }
+                }
+
+                // Assignee filter (empty = show all)
+                // Note: We don't have assignee data in Workstream yet,
+                // this is a placeholder for when we add it
+                // if !self.filter_assignees.is_empty() {
+                //     // TODO: Filter by assignee when data is available
+                // }
+
                 // Sub-issue filter (if disabled, hide issues that have a parent)
                 if !self.show_sub_issues && ws.linear_issue.parent.is_some() {
                     return false;
@@ -1598,7 +1674,10 @@ impl App {
     /// Check if any filter is active
     #[allow(dead_code)]
     pub fn has_active_filters(&self) -> bool {
-        !self.filter_cycles.is_empty() || !self.filter_priorities.is_empty()
+        !self.filter_cycles.is_empty()
+            || !self.filter_priorities.is_empty()
+            || !self.filter_projects.is_empty()
+            || !self.filter_assignees.is_empty()
     }
 }
 
