@@ -521,7 +521,20 @@ impl AppState {
 
     /// Build visual items list that matches exactly what's rendered
     /// This enables proper j/k navigation through the visual representation
-    pub fn build_visual_items(&self, filtered_indices: &[usize]) -> Vec<VisualItem> {
+    ///
+    /// When `preserve_order` is true (search mode), items are displayed in the
+    /// order given by `filtered_indices` (by relevance score) without section headers.
+    /// When false (normal mode), items are grouped by status with section headers.
+    pub fn build_visual_items(&self, filtered_indices: &[usize], preserve_order: bool) -> Vec<VisualItem> {
+        // In search mode, display results in score order (no grouping)
+        if preserve_order && !filtered_indices.is_empty() {
+            return filtered_indices
+                .iter()
+                .map(|&idx| VisualItem::Workstream(idx))
+                .collect();
+        }
+
+        // Normal mode: group by status with section headers
         let mut items = Vec::new();
         let grouped = self.grouped_workstreams();
 
