@@ -357,9 +357,11 @@ impl<'a> WorkstreamRowBuilder<'a> {
             self.separator(),
         ];
 
-        // Add sub-issue tree prefix before ID
+        // Add sub-issue tree prefix before ID (or 2-space padding to match header icon)
         if !sub_prefix.is_empty() {
             spans.push(Span::styled(sub_prefix, Style::default().fg(Color::DarkGray)));
+        } else {
+            spans.push(Span::raw("  "));
         }
         spans.extend(self.id_spans());
         spans.push(self.separator());
@@ -408,12 +410,8 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
     fn id_spans(&self) -> Vec<Span<'static>> {
         let issue = &self.ws.linear_issue;
-        let is_sub_issue = issue.parent.is_some();
-        let id_width = if is_sub_issue {
-            self.widths[COL_IDX_ID].saturating_sub(4) // Account for "└ " prefix
-        } else {
-            self.widths[COL_IDX_ID].saturating_sub(2)
-        };
+        // Always subtract 2 for the prefix (either "└ " for sub-issues or "  " for regular)
+        let id_width = self.widths[COL_IDX_ID].saturating_sub(2);
         let id_text = format!("{:<width$}", issue.identifier, width = id_width);
         highlight_search_matches(&id_text, self.search_query, linear_status_config(issue.status).style)
     }
