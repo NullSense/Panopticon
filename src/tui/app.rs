@@ -320,22 +320,16 @@ impl App {
             Message::NextChildIssue => self.next_child_issue(),
             Message::PrevChildIssue => self.prev_child_issue(),
             Message::NavigateToSelectedChild => {
+                // Only navigate if child exists in workstreams
+                // Don't open browser unexpectedly - user can use 'l' for links
                 if self.selected_child_idx.is_some() {
-                    if !self.navigate_to_selected_child() {
-                        // Child not in workstreams, open in browser
-                        self.open_selected_child_issue()?;
-                        self.modal = ModalState::None;
-                        self.clear_navigation();
-                    }
+                    self.navigate_to_selected_child();
                 }
             }
             Message::NavigateToParent => {
-                if !self.navigate_to_parent() {
-                    // Parent not in workstreams, open in browser
-                    self.open_parent_issue()?;
-                    self.modal = ModalState::None;
-                    self.clear_navigation();
-                }
+                // Only navigate if parent exists in workstreams
+                // Don't open browser unexpectedly - user can use 'l' for links
+                self.navigate_to_parent();
             }
             Message::OpenDocument(idx) => {
                 self.open_document(idx)?;
@@ -344,12 +338,9 @@ impl App {
             }
             Message::OpenDescriptionModal => self.open_description_modal(),
             Message::NavigateToChild(idx) => {
-                if !self.navigate_to_child(idx) {
-                    // Child not in workstreams, open in browser
-                    self.open_child_issue(idx)?;
-                    self.modal = ModalState::None;
-                    self.clear_navigation();
-                }
+                // Only navigate if child exists in workstreams
+                // Don't open browser unexpectedly - user can use 'l' for links
+                self.navigate_to_child(idx);
             }
 
             // ─────────────────────────────────────────────────────────────────
@@ -1017,16 +1008,6 @@ impl App {
         Ok(())
     }
 
-    /// Open a child issue by index (0-based)
-    pub fn open_child_issue(&self, index: usize) -> Result<()> {
-        if let Some(ws) = self.modal_issue() {
-            if let Some(child) = ws.linear_issue.children.get(index) {
-                open_linear_url(&child.url)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Maximum visible sub-issues in the link menu
     const SUB_ISSUES_VISIBLE_HEIGHT: usize = 8;
 
@@ -1070,24 +1051,6 @@ impl App {
                 self.sub_issues_scroll = new_idx;
             }
         }
-    }
-
-    /// Open currently selected sub-issue in browser
-    pub fn open_selected_child_issue(&self) -> Result<()> {
-        if let Some(idx) = self.selected_child_idx {
-            self.open_child_issue(idx)?;
-        }
-        Ok(())
-    }
-
-    /// Open the parent issue in browser
-    pub fn open_parent_issue(&self) -> Result<()> {
-        if let Some(ws) = self.modal_issue() {
-            if let Some(parent) = &ws.linear_issue.parent {
-                open_linear_url(&parent.url)?;
-            }
-        }
-        Ok(())
     }
 
     /// Navigate to parent issue in modal if it exists in workstreams
