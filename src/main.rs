@@ -1,9 +1,5 @@
-mod config;
-mod data;
-mod integrations;
-mod tui;
-
 use anyhow::Result;
+use panopticon::{config, integrations, tui};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
