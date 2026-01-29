@@ -9,6 +9,9 @@ pub struct Workstream {
     pub github_pr: Option<GitHubPR>,
     pub vercel_deployment: Option<VercelDeployment>,
     pub agent_session: Option<AgentSession>,
+    /// Whether this workstream is from cache and hasn't been refreshed yet
+    #[serde(skip)]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

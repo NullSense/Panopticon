@@ -7,7 +7,8 @@
 
 use chrono::{TimeZone, Utc};
 use panopticon::config::{
-    Config, LinearConfig, NotificationConfig, PollingConfig, Tokens, UiConfig,
+    CacheConfig, Config, GithubConfig, LinearConfig, NotificationConfig, PollingConfig, Tokens,
+    UiConfig, VercelConfig,
 };
 use panopticon::data::{
     LinearChildRef, LinearIssue, LinearParentRef, LinearPriority, LinearStatus, SortMode,
@@ -24,7 +25,10 @@ fn test_config() -> Config {
             vercel: None,
         },
         linear: LinearConfig::default(),
+        github: GithubConfig::default(),
+        vercel: VercelConfig::default(),
         polling: PollingConfig::default(),
+        cache: CacheConfig::default(),
         notifications: NotificationConfig::default(),
         ui: UiConfig::default(),
     }
@@ -76,6 +80,7 @@ fn make_workstream_with_hierarchy(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
+            stale: false,
     }
 }
 
@@ -737,6 +742,7 @@ fn make_workstream_with_status_children(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
+            stale: false,
     }
 }
 

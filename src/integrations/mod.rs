@@ -1,4 +1,5 @@
 pub mod agent_cache;
+pub mod cache;
 pub mod claude;
 pub mod github;
 pub mod linear;
@@ -68,6 +69,7 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             github_pr: pr,
             vercel_deployment: deployment,
             agent_session: agent,
+            stale: false,
         });
     }
 
@@ -180,6 +182,7 @@ pub async fn fetch_workstreams_incremental(
                     github_pr: pr,
                     vercel_deployment: deployment,
                     agent_session: agent,
+                    stale: false,
                 };
 
                 if let Err(e) = tx.send(RefreshResult::Workstream(ws)).await {

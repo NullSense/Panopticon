@@ -46,6 +46,7 @@ fn make_workstream(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
+            stale: false,
     }
 }
 

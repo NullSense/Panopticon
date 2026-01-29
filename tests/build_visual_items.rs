@@ -32,6 +32,7 @@ fn make_workstream(id: &str, identifier: &str, status: LinearStatus) -> Workstre
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
+            stale: false,
     }
 }
 

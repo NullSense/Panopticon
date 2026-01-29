@@ -5,7 +5,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use panopticon::config::{
-    Config, LinearConfig, NotificationConfig, PollingConfig, Tokens, UiConfig,
+    CacheConfig, Config, GithubConfig, LinearConfig, NotificationConfig, PollingConfig, Tokens,
+    UiConfig, VercelConfig,
 };
 use panopticon::tui::input::InputState;
 use panopticon::tui::keybindings::dispatch;
@@ -23,7 +24,10 @@ fn test_config() -> Config {
             vercel: None,
         },
         linear: LinearConfig::default(),
+        github: GithubConfig::default(),
+        vercel: VercelConfig::default(),
         polling: PollingConfig::default(),
+        cache: CacheConfig::default(),
         notifications: NotificationConfig::default(),
         ui: UiConfig::default(),
     }
