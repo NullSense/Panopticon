@@ -27,11 +27,32 @@
 - Inline comments for complex logic
 - No excessive documentation - code should be self-explanatory
 
-## TUI Patterns
-- App struct holds all application state
-- Methods on App for state mutations
-- Separate ui.rs for rendering logic
-- Constants for column indices and layout
+## TUI Patterns (Elm Architecture)
+
+### Message-Based Updates
+- All user actions are `Message` enum variants in `message.rs`
+- `input::dispatch(app, input_state, key)` maps keys to messages
+- `App::update(msg)` processes messages, returns `bool` (true = quit)
+- Pure unidirectional flow: Key Event → Message → State Update → Render
+
+### Modal State
+- Single `ModalState` enum (not boolean flags)
+- Variants: `None`, `Help { tab }`, `LinkMenu { show_links_popup }`, `SortMenu`, `FilterMenu`, `Description`, `Resize`
+
+### Input Handling
+- `InputState` struct manages chord sequences (gg, d1-d9, c1-c9)
+- Non-blocking timeout detection in main loop
+- Context-aware dispatch based on current modal/search state
+
+### Background Operations
+- `start_background_refresh()` spawns async task
+- `poll_refresh()` checks for results (non-blocking)
+- Progress updates via `mpsc` channel
+
+### UI Structure
+- `ui.rs` contains all rendering logic (view layer)
+- `App` struct holds all application state
+- Constants for column indices and layout in `app.rs`
 
 ## Testing
 - Tests in `tests/` directory
