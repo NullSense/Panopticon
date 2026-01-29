@@ -1,5 +1,7 @@
 //! Test utilities and fixtures for panopticon tests
 
+pub mod claude_settings;
+
 use serde_json::{json, Value};
 
 /// Minimal valid issue JSON that should always parse successfully
