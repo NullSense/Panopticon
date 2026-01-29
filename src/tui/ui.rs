@@ -95,27 +95,27 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_status_bar(f, app, chunks[2]);
 
     // Overlays
-    if app.show_help {
+    if app.show_help() {
         draw_help_popup(f, app);
     }
 
-    if app.show_link_menu {
+    if app.show_link_menu() {
         draw_link_menu(f, app);
         // Draw links popup on top if visible
-        if app.show_links_popup {
+        if app.show_links_popup() {
             draw_links_popup(f, app);
         }
     }
 
-    if app.show_sort_menu {
+    if app.show_sort_menu() {
         draw_sort_menu(f, app);
     }
 
-    if app.show_filter_menu {
+    if app.show_filter_menu() {
         draw_filter_menu(f, app);
     }
 
-    if app.show_description_modal {
+    if app.show_description_modal() {
         draw_description_modal(f, app);
     }
 }
@@ -211,7 +211,7 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
 
     // Helper to get style for a column (highlighted if selected in resize mode)
     let col_style = |idx: usize, base: Style| -> Style {
-        if app.resize_mode && app.resize_column_idx == idx {
+        if app.resize_mode() && app.resize_column_idx == idx {
             highlight_style
         } else {
             base
@@ -314,158 +314,187 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn build_workstream_row(ws: &crate::data::Workstream, selected: bool, widths: &[usize; 8], search_query: Option<&str>) -> ListItem<'static> {
-    let issue = &ws.linear_issue;
-    let sep_style = Style::default().fg(Color::DarkGray);
+    WorkstreamRowBuilder::new(ws, widths, search_query).build(selected)
+}
 
-    // Get widths
-    let col_priority = widths[COL_IDX_PRIORITY];
-    let col_id = widths[COL_IDX_ID];
-    let col_title = widths[COL_IDX_TITLE];
-    let col_pr = widths[COL_IDX_PR];
-    let col_agent = widths[COL_IDX_AGENT];
-    let col_vercel = widths[COL_IDX_VERCEL];
-    let col_time = widths[COL_IDX_TIME];
+/// Builder for workstream row UI elements
+/// Decomposes the row building into smaller, focused methods
+struct WorkstreamRowBuilder<'a> {
+    ws: &'a crate::data::Workstream,
+    widths: &'a [usize; 8],
+    search_query: Option<&'a str>,
+    sep_style: Style,
+}
 
-    // Status icon (fractional circle)
-    let status_cfg = linear_status_config(issue.status);
-    let status_span = Span::styled(status_cfg.icon.to_string(), status_cfg.style);
-
-    // Priority icon (signal bars)
-    let priority_cfg = priority_config(issue.priority);
-    let priority_span = Span::styled(format!("{:^width$}", priority_cfg.icon, width = col_priority), priority_cfg.style);
-
-    // Sub-issue indicator: show tree connector and parent ID if this is a child
-    let (sub_prefix, sub_suffix) = if let Some(parent) = &issue.parent {
-        // └ DRE-123 for sub-issues, with parent ID in dim after title
-        ("└ ".to_string(), format!(" ← {}", parent.identifier))
-    } else {
-        (String::new(), String::new())
-    };
-    let is_sub_issue = issue.parent.is_some();
-
-    // Linear ID - colored by status, with search highlighting
-    // Use saturating_sub(2) to match header width (header has icon + space before text)
-    // Subtract additional space for sub-issue prefix if present
-    let id_width = if is_sub_issue {
-        col_id.saturating_sub(4) // Account for "└ " prefix
-    } else {
-        col_id.saturating_sub(2)
-    };
-    let id_text = format!("{:<width$}", issue.identifier, width = id_width);
-    let id_spans = highlight_search_matches(&id_text, search_query, linear_status_config(issue.status).style);
-
-    // Title (truncated with ellipsis), with search highlighting
-    // Reserve space for parent indicator suffix if sub-issue
-    let title_max = if is_sub_issue {
-        col_title.saturating_sub(sub_suffix.chars().count())
-    } else {
-        col_title
-    };
-    let title = if issue.title.chars().count() > title_max {
-        let truncated: String = issue.title.chars().take(title_max.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    } else {
-        format!("{:<width$}", issue.title, width = title_max)
-    };
-    let title_spans = highlight_search_matches(&title, search_query, Style::default());
-
-    // PR status
-    // Use saturating_sub(2) to match header width (header has icon + space before text)
-    let (pr_text, pr_style) = if let Some(pr) = &ws.github_pr {
-        let pr_cfg = pr_status_config(pr.status);
-        let text = format!("{} PR#{:<5}", pr_cfg.icon, pr.number);
-        let text = format!("{:<width$}", text, width = col_pr.saturating_sub(2));
-        (text, pr_cfg.style)
-    } else {
-        (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_pr.saturating_sub(2)), Style::default().fg(Color::DarkGray))
-    };
-    let pr_span = Span::styled(pr_text, pr_style);
-
-    // Agent status
-    // Use saturating_sub(2) to match header width (header has icon + space before text)
-    let (agent_text, agent_style) = if let Some(session) = &ws.agent_session {
-        let agent_cfg = agent_status_config(session.status);
-        let label = session.status.label();
-        let text = format!("{} {:<5}", agent_cfg.icon, label);
-        let text = format!("{:<width$}", text, width = col_agent.saturating_sub(2));
-        (text, agent_cfg.style)
-    } else {
-        (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_agent.saturating_sub(2)), Style::default().fg(Color::DarkGray))
-    };
-    let agent_span = Span::styled(agent_text, agent_style);
-
-    // Vercel status
-    let (vercel_text, vercel_style) = if let Some(deploy) = &ws.vercel_deployment {
-        let vercel_cfg = vercel_status_config(deploy.status);
-        (format!("{:^width$}", vercel_cfg.icon, width = col_vercel), vercel_cfg.style)
-    } else {
-        (format!("{:^width$}", icons::VERCEL_NONE, width = col_vercel), Style::default().fg(Color::DarkGray))
-    };
-    let vercel_span = Span::styled(vercel_text, vercel_style);
-
-    // Elapsed time
-    let elapsed = if let Some(session) = &ws.agent_session {
-        let duration = chrono::Utc::now().signed_duration_since(session.started_at);
-        if session.status == AgentStatus::Done {
-            "done".to_string()
-        } else {
-            let mins = duration.num_minutes();
-            let secs = duration.num_seconds() % 60;
-            if mins > 99 {
-                format!("{}m", mins)
-            } else {
-                format!("{:02}:{:02}", mins, secs)
-            }
+impl<'a> WorkstreamRowBuilder<'a> {
+    fn new(ws: &'a crate::data::Workstream, widths: &'a [usize; 8], search_query: Option<&'a str>) -> Self {
+        Self {
+            ws,
+            widths,
+            search_query,
+            sep_style: Style::default().fg(Color::DarkGray),
         }
-    } else {
-        "".to_string()
-    };
-    // Use saturating_sub(2) to match header width (header has icon + space before text)
-    let elapsed_span = Span::styled(
-        format!("{:>width$}", elapsed, width = col_time.saturating_sub(2)),
-        Style::default().fg(Color::DarkGray),
-    );
-
-    // Build line with spans - id and title may have multiple spans for highlighting
-    let mut line_spans = vec![
-        Span::raw("  "),
-        status_span,
-        Span::styled(" │ ", sep_style),
-        priority_span,
-        Span::styled(" │ ", sep_style),
-    ];
-    // Add sub-issue tree prefix before ID
-    if !sub_prefix.is_empty() {
-        line_spans.push(Span::styled(sub_prefix, Style::default().fg(Color::DarkGray)));
     }
-    line_spans.extend(id_spans);
-    line_spans.push(Span::styled(" │ ", sep_style));
-    line_spans.extend(title_spans);
-    // Add parent reference suffix after title for sub-issues
-    if !sub_suffix.is_empty() {
-        line_spans.push(Span::styled(sub_suffix, Style::default().fg(Color::DarkGray)))
+
+    fn build(self, selected: bool) -> ListItem<'static> {
+        let line = Line::from(self.build_spans());
+        let style = if selected {
+            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        ListItem::new(line).style(style)
     }
-    line_spans.extend(vec![
-        Span::styled(" │ ", sep_style),
-        pr_span,
-        Span::styled(" │ ", sep_style),
-        agent_span,
-        Span::styled(" │ ", sep_style),
-        vercel_span,
-        Span::styled(" │ ", sep_style),
-        elapsed_span,
-    ]);
-    let line = Line::from(line_spans);
 
-    let style = if selected {
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
+    fn build_spans(&self) -> Vec<Span<'static>> {
+        let (sub_prefix, sub_suffix) = self.sub_issue_indicators();
 
-    ListItem::new(line).style(style)
+        let mut spans = vec![
+            Span::raw("  "),
+            self.status_span(),
+            self.separator(),
+            self.priority_span(),
+            self.separator(),
+        ];
+
+        // Add sub-issue tree prefix before ID
+        if !sub_prefix.is_empty() {
+            spans.push(Span::styled(sub_prefix, Style::default().fg(Color::DarkGray)));
+        }
+        spans.extend(self.id_spans());
+        spans.push(self.separator());
+        spans.extend(self.title_spans(&sub_suffix));
+
+        // Add parent reference suffix after title for sub-issues
+        if !sub_suffix.is_empty() {
+            spans.push(Span::styled(sub_suffix, Style::default().fg(Color::DarkGray)));
+        }
+
+        spans.extend(vec![
+            self.separator(),
+            self.pr_span(),
+            self.separator(),
+            self.agent_span(),
+            self.separator(),
+            self.vercel_span(),
+            self.separator(),
+            self.elapsed_span(),
+        ]);
+
+        spans
+    }
+
+    fn separator(&self) -> Span<'static> {
+        Span::styled(" │ ", self.sep_style)
+    }
+
+    fn sub_issue_indicators(&self) -> (String, String) {
+        if let Some(parent) = &self.ws.linear_issue.parent {
+            ("└ ".to_string(), format!(" ← {}", parent.identifier))
+        } else {
+            (String::new(), String::new())
+        }
+    }
+
+    fn status_span(&self) -> Span<'static> {
+        let cfg = linear_status_config(self.ws.linear_issue.status);
+        Span::styled(cfg.icon.to_string(), cfg.style)
+    }
+
+    fn priority_span(&self) -> Span<'static> {
+        let cfg = priority_config(self.ws.linear_issue.priority);
+        Span::styled(format!("{:^width$}", cfg.icon, width = self.widths[COL_IDX_PRIORITY]), cfg.style)
+    }
+
+    fn id_spans(&self) -> Vec<Span<'static>> {
+        let issue = &self.ws.linear_issue;
+        let is_sub_issue = issue.parent.is_some();
+        let id_width = if is_sub_issue {
+            self.widths[COL_IDX_ID].saturating_sub(4) // Account for "└ " prefix
+        } else {
+            self.widths[COL_IDX_ID].saturating_sub(2)
+        };
+        let id_text = format!("{:<width$}", issue.identifier, width = id_width);
+        highlight_search_matches(&id_text, self.search_query, linear_status_config(issue.status).style)
+    }
+
+    fn title_spans(&self, sub_suffix: &str) -> Vec<Span<'static>> {
+        let issue = &self.ws.linear_issue;
+        let is_sub_issue = issue.parent.is_some();
+        let title_max = if is_sub_issue {
+            self.widths[COL_IDX_TITLE].saturating_sub(sub_suffix.chars().count())
+        } else {
+            self.widths[COL_IDX_TITLE]
+        };
+
+        let title = if issue.title.chars().count() > title_max {
+            let truncated: String = issue.title.chars().take(title_max.saturating_sub(1)).collect();
+            format!("{}…", truncated)
+        } else {
+            format!("{:<width$}", issue.title, width = title_max)
+        };
+        highlight_search_matches(&title, self.search_query, Style::default())
+    }
+
+    fn pr_span(&self) -> Span<'static> {
+        let col_pr = self.widths[COL_IDX_PR];
+        let (text, style) = if let Some(pr) = &self.ws.github_pr {
+            let cfg = pr_status_config(pr.status);
+            let text = format!("{} PR#{:<5}", cfg.icon, pr.number);
+            (format!("{:<width$}", text, width = col_pr.saturating_sub(2)), cfg.style)
+        } else {
+            (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_pr.saturating_sub(2)), Style::default().fg(Color::DarkGray))
+        };
+        Span::styled(text, style)
+    }
+
+    fn agent_span(&self) -> Span<'static> {
+        let col_agent = self.widths[COL_IDX_AGENT];
+        let (text, style) = if let Some(session) = &self.ws.agent_session {
+            let cfg = agent_status_config(session.status);
+            let label = session.status.label();
+            let text = format!("{} {:<5}", cfg.icon, label);
+            (format!("{:<width$}", text, width = col_agent.saturating_sub(2)), cfg.style)
+        } else {
+            (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_agent.saturating_sub(2)), Style::default().fg(Color::DarkGray))
+        };
+        Span::styled(text, style)
+    }
+
+    fn vercel_span(&self) -> Span<'static> {
+        let col_vercel = self.widths[COL_IDX_VERCEL];
+        let (text, style) = if let Some(deploy) = &self.ws.vercel_deployment {
+            let cfg = vercel_status_config(deploy.status);
+            (format!("{:^width$}", cfg.icon, width = col_vercel), cfg.style)
+        } else {
+            (format!("{:^width$}", icons::VERCEL_NONE, width = col_vercel), Style::default().fg(Color::DarkGray))
+        };
+        Span::styled(text, style)
+    }
+
+    fn elapsed_span(&self) -> Span<'static> {
+        let col_time = self.widths[COL_IDX_TIME];
+        let elapsed = if let Some(session) = &self.ws.agent_session {
+            let duration = chrono::Utc::now().signed_duration_since(session.started_at);
+            if session.status == AgentStatus::Done {
+                "done".to_string()
+            } else {
+                let mins = duration.num_minutes();
+                let secs = duration.num_seconds() % 60;
+                if mins > 99 {
+                    format!("{}m", mins)
+                } else {
+                    format!("{:02}:{:02}", mins, secs)
+                }
+            }
+        } else {
+            "".to_string()
+        };
+        Span::styled(
+            format!("{:>width$}", elapsed, width = col_time.saturating_sub(2)),
+            Style::default().fg(Color::DarkGray),
+        )
+    }
 }
 
 // Icon and color helpers
@@ -512,159 +541,190 @@ fn highlight_search_matches(text: &str, query: Option<&str>, base_style: Style) 
 }
 
 /// Unified status configuration - single source of truth for icon and style
-struct StatusConfig {
-    icon: &'static str,
-    style: Style,
+pub(crate) struct StatusConfig {
+    pub icon: &'static str,
+    pub style: Style,
 }
 
-/// Get icon and style for LinearStatus (single source of truth)
+/// Trait for types that can provide their display configuration (icon + style)
+pub(crate) trait StatusConfigurable {
+    fn status_config(&self) -> StatusConfig;
+}
+
+impl StatusConfigurable for LinearStatus {
+    fn status_config(&self) -> StatusConfig {
+        match self {
+            LinearStatus::Triage => StatusConfig {
+                icon: icons::STATUS_TRIAGE,
+                style: Style::default().fg(Color::Rgb(255, 165, 0)), // Orange
+            },
+            LinearStatus::Backlog => StatusConfig {
+                icon: icons::STATUS_BACKLOG,
+                style: Style::default().fg(Color::DarkGray),
+            },
+            LinearStatus::Todo => StatusConfig {
+                icon: icons::STATUS_TODO,
+                style: Style::default().fg(Color::Cyan),
+            },
+            LinearStatus::InProgress => StatusConfig {
+                icon: icons::STATUS_IN_PROGRESS,
+                style: Style::default().fg(Color::Green),
+            },
+            LinearStatus::InReview => StatusConfig {
+                icon: icons::STATUS_IN_REVIEW,
+                style: Style::default().fg(Color::Yellow),
+            },
+            LinearStatus::Done => StatusConfig {
+                icon: icons::STATUS_DONE,
+                style: Style::default().fg(Color::Magenta),
+            },
+            LinearStatus::Canceled => StatusConfig {
+                icon: icons::STATUS_CANCELED,
+                style: Style::default().fg(Color::DarkGray),
+            },
+            LinearStatus::Duplicate => StatusConfig {
+                icon: icons::STATUS_DUPLICATE,
+                style: Style::default().fg(Color::DarkGray),
+            },
+        }
+    }
+}
+
+impl StatusConfigurable for LinearPriority {
+    fn status_config(&self) -> StatusConfig {
+        match self {
+            LinearPriority::Urgent => StatusConfig {
+                icon: icons::PRIORITY_URGENT,
+                style: Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+            },
+            LinearPriority::High => StatusConfig {
+                icon: icons::PRIORITY_HIGH,
+                style: Style::default().fg(Color::Yellow),
+            },
+            LinearPriority::Medium => StatusConfig {
+                icon: icons::PRIORITY_MEDIUM,
+                style: Style::default().fg(Color::Cyan),
+            },
+            LinearPriority::Low => StatusConfig {
+                icon: icons::PRIORITY_LOW,
+                style: Style::default().fg(Color::DarkGray),
+            },
+            LinearPriority::NoPriority => StatusConfig {
+                icon: icons::PRIORITY_NONE,
+                style: Style::default().fg(Color::DarkGray),
+            },
+        }
+    }
+}
+
+impl StatusConfigurable for GitHubPRStatus {
+    fn status_config(&self) -> StatusConfig {
+        match self {
+            GitHubPRStatus::Draft => StatusConfig {
+                icon: icons::PR_DRAFT,
+                style: Style::default().fg(Color::Blue),
+            },
+            GitHubPRStatus::Open => StatusConfig {
+                icon: icons::PR_OPEN,
+                style: Style::default().fg(Color::White),
+            },
+            GitHubPRStatus::ReviewRequested => StatusConfig {
+                icon: icons::PR_REVIEW,
+                style: Style::default().fg(Color::Cyan),
+            },
+            GitHubPRStatus::ChangesRequested => StatusConfig {
+                icon: icons::PR_CHANGES,
+                style: Style::default().fg(Color::Yellow),
+            },
+            GitHubPRStatus::Approved => StatusConfig {
+                icon: icons::PR_APPROVED,
+                style: Style::default().fg(Color::Green),
+            },
+            GitHubPRStatus::Merged => StatusConfig {
+                icon: icons::PR_MERGED,
+                style: Style::default().fg(Color::Magenta),
+            },
+            GitHubPRStatus::Closed => StatusConfig {
+                icon: icons::PR_CLOSED,
+                style: Style::default().fg(Color::DarkGray),
+            },
+        }
+    }
+}
+
+impl StatusConfigurable for AgentStatus {
+    fn status_config(&self) -> StatusConfig {
+        match self {
+            AgentStatus::Running => StatusConfig {
+                icon: icons::AGENT_RUNNING,
+                style: Style::default().fg(Color::Green),
+            },
+            AgentStatus::Idle => StatusConfig {
+                icon: icons::AGENT_IDLE,
+                style: Style::default().fg(Color::Yellow),
+            },
+            AgentStatus::WaitingForInput => StatusConfig {
+                icon: icons::AGENT_WAITING,
+                style: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            },
+            AgentStatus::Done => StatusConfig {
+                icon: icons::AGENT_DONE,
+                style: Style::default().fg(Color::DarkGray),
+            },
+            AgentStatus::Error => StatusConfig {
+                icon: icons::AGENT_ERROR,
+                style: Style::default().fg(Color::Red),
+            },
+        }
+    }
+}
+
+impl StatusConfigurable for VercelStatus {
+    fn status_config(&self) -> StatusConfig {
+        match self {
+            VercelStatus::Ready => StatusConfig {
+                icon: icons::VERCEL_READY,
+                style: Style::default().fg(Color::Green),
+            },
+            VercelStatus::Building => StatusConfig {
+                icon: icons::VERCEL_BUILDING,
+                style: Style::default().fg(Color::Yellow),
+            },
+            VercelStatus::Queued => StatusConfig {
+                icon: icons::VERCEL_QUEUED,
+                style: Style::default().fg(Color::Blue),
+            },
+            VercelStatus::Error => StatusConfig {
+                icon: icons::VERCEL_ERROR,
+                style: Style::default().fg(Color::Red),
+            },
+            VercelStatus::Canceled => StatusConfig {
+                icon: icons::VERCEL_NONE,
+                style: Style::default().fg(Color::DarkGray),
+            },
+        }
+    }
+}
+
+// Convenience functions to maintain backward compatibility during refactoring
 fn linear_status_config(status: LinearStatus) -> StatusConfig {
-    match status {
-        LinearStatus::Triage => StatusConfig {
-            icon: icons::STATUS_TRIAGE,
-            style: Style::default().fg(Color::Rgb(255, 165, 0)), // Orange
-        },
-        LinearStatus::Backlog => StatusConfig {
-            icon: icons::STATUS_BACKLOG,
-            style: Style::default().fg(Color::DarkGray),
-        },
-        LinearStatus::Todo => StatusConfig {
-            icon: icons::STATUS_TODO,
-            style: Style::default().fg(Color::Cyan),
-        },
-        LinearStatus::InProgress => StatusConfig {
-            icon: icons::STATUS_IN_PROGRESS,
-            style: Style::default().fg(Color::Green),
-        },
-        LinearStatus::InReview => StatusConfig {
-            icon: icons::STATUS_IN_REVIEW,
-            style: Style::default().fg(Color::Yellow),
-        },
-        LinearStatus::Done => StatusConfig {
-            icon: icons::STATUS_DONE,
-            style: Style::default().fg(Color::Magenta),
-        },
-        LinearStatus::Canceled => StatusConfig {
-            icon: icons::STATUS_CANCELED,
-            style: Style::default().fg(Color::DarkGray),
-        },
-        LinearStatus::Duplicate => StatusConfig {
-            icon: icons::STATUS_DUPLICATE,
-            style: Style::default().fg(Color::DarkGray),
-        },
-    }
+    status.status_config()
 }
 
-/// Get icon and style for LinearPriority
 fn priority_config(priority: LinearPriority) -> StatusConfig {
-    match priority {
-        LinearPriority::Urgent => StatusConfig {
-            icon: icons::PRIORITY_URGENT,
-            style: Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
-        },
-        LinearPriority::High => StatusConfig {
-            icon: icons::PRIORITY_HIGH,
-            style: Style::default().fg(Color::Yellow),
-        },
-        LinearPriority::Medium => StatusConfig {
-            icon: icons::PRIORITY_MEDIUM,
-            style: Style::default().fg(Color::Cyan),
-        },
-        LinearPriority::Low => StatusConfig {
-            icon: icons::PRIORITY_LOW,
-            style: Style::default().fg(Color::DarkGray),
-        },
-        LinearPriority::NoPriority => StatusConfig {
-            icon: icons::PRIORITY_NONE,
-            style: Style::default().fg(Color::DarkGray),
-        },
-    }
+    priority.status_config()
 }
 
-/// Get icon and style for GitHubPRStatus
 fn pr_status_config(status: GitHubPRStatus) -> StatusConfig {
-    match status {
-        GitHubPRStatus::Draft => StatusConfig {
-            icon: icons::PR_DRAFT,
-            style: Style::default().fg(Color::Blue),
-        },
-        GitHubPRStatus::Open => StatusConfig {
-            icon: icons::PR_OPEN,
-            style: Style::default().fg(Color::White),
-        },
-        GitHubPRStatus::ReviewRequested => StatusConfig {
-            icon: icons::PR_REVIEW,
-            style: Style::default().fg(Color::Cyan),
-        },
-        GitHubPRStatus::ChangesRequested => StatusConfig {
-            icon: icons::PR_CHANGES,
-            style: Style::default().fg(Color::Yellow),
-        },
-        GitHubPRStatus::Approved => StatusConfig {
-            icon: icons::PR_APPROVED,
-            style: Style::default().fg(Color::Green),
-        },
-        GitHubPRStatus::Merged => StatusConfig {
-            icon: icons::PR_MERGED,
-            style: Style::default().fg(Color::Magenta),
-        },
-        GitHubPRStatus::Closed => StatusConfig {
-            icon: icons::PR_CLOSED,
-            style: Style::default().fg(Color::DarkGray),
-        },
-    }
+    status.status_config()
 }
 
-/// Get icon and style for AgentStatus
 fn agent_status_config(status: AgentStatus) -> StatusConfig {
-    match status {
-        AgentStatus::Running => StatusConfig {
-            icon: icons::AGENT_RUNNING,
-            style: Style::default().fg(Color::Green),
-        },
-        AgentStatus::Idle => StatusConfig {
-            icon: icons::AGENT_IDLE,
-            style: Style::default().fg(Color::Yellow),
-        },
-        AgentStatus::WaitingForInput => StatusConfig {
-            icon: icons::AGENT_WAITING,
-            style: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        },
-        AgentStatus::Done => StatusConfig {
-            icon: icons::AGENT_DONE,
-            style: Style::default().fg(Color::DarkGray),
-        },
-        AgentStatus::Error => StatusConfig {
-            icon: icons::AGENT_ERROR,
-            style: Style::default().fg(Color::Red),
-        },
-    }
+    status.status_config()
 }
 
-/// Get icon and style for VercelStatus
 fn vercel_status_config(status: VercelStatus) -> StatusConfig {
-    match status {
-        VercelStatus::Ready => StatusConfig {
-            icon: icons::VERCEL_READY,
-            style: Style::default().fg(Color::Green),
-        },
-        VercelStatus::Building => StatusConfig {
-            icon: icons::VERCEL_BUILDING,
-            style: Style::default().fg(Color::Yellow),
-        },
-        VercelStatus::Queued => StatusConfig {
-            icon: icons::VERCEL_QUEUED,
-            style: Style::default().fg(Color::Blue),
-        },
-        VercelStatus::Error => StatusConfig {
-            icon: icons::VERCEL_ERROR,
-            style: Style::default().fg(Color::Red),
-        },
-        VercelStatus::Canceled => StatusConfig {
-            icon: icons::VERCEL_NONE,
-            style: Style::default().fg(Color::DarkGray),
-        },
-    }
+    status.status_config()
 }
 
 /// Generate the status legend for help popup programmatically
@@ -727,7 +787,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let status = if let Some(err) = &app.error_message {
         Span::styled(err, Style::default().fg(Color::Red))
-    } else if app.resize_mode {
+    } else if app.resize_mode() {
         let text = if width >= 60 {
             format!(
                 " RESIZE: {} [{}] | h/l: -/+ width | Tab: next | Esc: done ",
@@ -783,8 +843,8 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
     let tab_style_active = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let tab_style_inactive = Style::default().fg(Color::DarkGray);
 
-    let tab_1_style = if app.help_tab == 0 { tab_style_active } else { tab_style_inactive };
-    let tab_2_style = if app.help_tab == 1 { tab_style_active } else { tab_style_inactive };
+    let tab_1_style = if app.help_tab() == 0 { tab_style_active } else { tab_style_inactive };
+    let tab_2_style = if app.help_tab() == 1 { tab_style_active } else { tab_style_inactive };
 
     let tabs = Line::from(vec![
         Span::styled(" [1] Shortcuts ", tab_1_style),
@@ -792,7 +852,7 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
         Span::styled("[2] Status Legend ", tab_2_style),
     ]);
 
-    let content = if app.help_tab == 0 {
+    let content = if app.help_tab() == 0 {
         // Keyboard shortcuts
         vec![
             "",

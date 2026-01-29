@@ -5,6 +5,7 @@ use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Braille spinner frames for loading animation
@@ -54,97 +55,134 @@ pub const COLUMN_NAMES: [&str; NUM_COLUMNS] = [
     "Status", "Priority", "ID", "Title", "PR", "Agent", "Vercel", "Time"
 ];
 
+/// Active modal state - only one modal can be active at a time
+/// This enum consolidates the previous 7 boolean modal flags
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModalState {
+    #[default]
+    None,
+    Help { tab: usize },
+    LinkMenu { show_links_popup: bool },
+    SortMenu,
+    FilterMenu,
+    Description,
+    Resize,
+}
+
+impl ModalState {
+    pub fn is_none(&self) -> bool {
+        matches!(self, ModalState::None)
+    }
+}
+
 pub struct App {
-    pub config: Config,
+    pub config: Arc<Config>,
     pub state: AppState,
     pub filtered_indices: Vec<usize>,
     pub visual_items: Vec<VisualItem>,
     pub visual_selected: usize,
-    pub show_help: bool,
-    pub help_tab: usize, // 0 = shortcuts, 1 = status legend
-    pub show_link_menu: bool,
-    /// Quick links popup within issue details
-    pub show_links_popup: bool,
-    pub show_sort_menu: bool,
+
+    // Modal state - single enum replacing 7 booleans
+    pub modal: ModalState,
+
+    // UI state
     pub show_preview: bool,
-    pub search_all: bool,
     pub error_message: Option<String>,
     pub is_loading: bool,
     pub spinner_frame: usize,
-    /// Search excerpts for workstreams that matched in description
-    pub search_excerpts: HashMap<usize, SearchMatch>,
-    /// Resize mode active
-    pub resize_mode: bool,
-    /// Currently selected column in resize mode
-    pub resize_column_idx: usize,
-    /// Column widths (Status, Priority, ID, Title, PR, Agent, Vercel, Time)
     pub column_widths: [usize; NUM_COLUMNS],
-    /// Filter menu visible
-    pub show_filter_menu: bool,
-    /// Filter by cycle IDs (empty = show all)
+    pub resize_column_idx: usize,
+
+    // Search state
+    pub search_all: bool,
+    pub search_excerpts: HashMap<usize, SearchMatch>,
+
+    // Filter state
     pub filter_cycles: HashSet<String>,
-    /// Filter by priorities (empty = show all)
     pub filter_priorities: HashSet<LinearPriority>,
-    /// Available cycles (populated from workstreams)
     pub available_cycles: Vec<LinearCycle>,
-    /// Show full description modal
-    pub show_description_modal: bool,
-    /// Description scroll position (line offset)
-    pub description_scroll: usize,
-    /// Show sub-issues (issues with a parent) - default true
     pub show_sub_issues: bool,
-    /// Selected child/sub-issue index in link menu (for j/k navigation)
+
+    // Modal navigation state
     pub selected_child_idx: Option<usize>,
-    /// Navigation stack for in-modal issue navigation (stores issue IDs for back navigation)
     pub issue_navigation_stack: Vec<String>,
-    /// Currently viewed issue ID in modal (if different from selected workstream)
     pub modal_issue_id: Option<String>,
-    /// Scroll offset for sub-issues list in modal
     pub sub_issues_scroll: usize,
-    /// Modal search mode active
+    pub description_scroll: usize,
     pub modal_search_mode: bool,
-    /// Modal search query
     pub modal_search_query: String,
+
     /// Channel receiver for background refresh results
     pub refresh_rx: Option<mpsc::Receiver<RefreshResult>>,
     /// Progress tracking for incremental updates
     pub refresh_progress: Option<RefreshProgress>,
 }
 
+// Modal state accessors (backward-compatible interface)
+impl App {
+    pub fn show_help(&self) -> bool {
+        matches!(self.modal, ModalState::Help { .. })
+    }
+
+    pub fn help_tab(&self) -> usize {
+        match self.modal {
+            ModalState::Help { tab } => tab,
+            _ => 0,
+        }
+    }
+
+    pub fn show_link_menu(&self) -> bool {
+        matches!(self.modal, ModalState::LinkMenu { .. })
+    }
+
+    pub fn show_links_popup(&self) -> bool {
+        matches!(self.modal, ModalState::LinkMenu { show_links_popup: true })
+    }
+
+    pub fn show_sort_menu(&self) -> bool {
+        matches!(self.modal, ModalState::SortMenu)
+    }
+
+    pub fn show_filter_menu(&self) -> bool {
+        matches!(self.modal, ModalState::FilterMenu)
+    }
+
+    pub fn show_description_modal(&self) -> bool {
+        matches!(self.modal, ModalState::Description)
+    }
+
+    pub fn resize_mode(&self) -> bool {
+        matches!(self.modal, ModalState::Resize)
+    }
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
         Self {
-            config,
+            config: Arc::new(config),
             state: AppState::default(),
             filtered_indices: vec![],
             visual_items: vec![],
             visual_selected: 0,
-            show_help: false,
-            help_tab: 0,
-            show_link_menu: false,
-            show_links_popup: false,
-            show_sort_menu: false,
+            modal: ModalState::None,
             show_preview: false,
-            search_all: false,
             error_message: None,
             is_loading: false,
             spinner_frame: 0,
-            search_excerpts: HashMap::new(),
-            resize_mode: false,
-            resize_column_idx: COL_IDX_TITLE, // Start with title column selected
             // Default widths: Status=1, Priority=3, ID=10, Title=26, PR=12, Agent=10, Vercel=3, Time=6
             column_widths: [1, 3, 10, 26, 12, 10, 3, 6],
-            show_filter_menu: false,
+            resize_column_idx: COL_IDX_TITLE,
+            search_all: false,
+            search_excerpts: HashMap::new(),
             filter_cycles: HashSet::new(),
             filter_priorities: HashSet::new(),
             available_cycles: Vec::new(),
-            show_description_modal: false,
-            description_scroll: 0,
-            show_sub_issues: true, // Default: show all issues including sub-issues
+            show_sub_issues: true,
             selected_child_idx: None,
             issue_navigation_stack: Vec::new(),
             modal_issue_id: None,
             sub_issues_scroll: 0,
+            description_scroll: 0,
             modal_search_mode: false,
             modal_search_query: String::new(),
             refresh_rx: None,
@@ -272,7 +310,7 @@ impl App {
         let (tx, rx) = mpsc::channel(100);
         self.refresh_rx = Some(rx);
 
-        let config = self.config.clone();
+        let config = Arc::clone(&self.config);
 
         // Spawn background task
         tokio::spawn(async move {
@@ -496,23 +534,17 @@ impl App {
         let steps = delta.unsigned_abs() as usize;
 
         for _ in 0..steps {
-            // Move in the direction
-            loop {
-                if delta > 0 {
-                    if pos >= len - 1 {
-                        break; // At end
-                    }
-                    pos += 1;
-                } else {
-                    if pos == 0 {
-                        break; // At start
-                    }
-                    pos -= 1;
+            // Move in the direction (stop on any item - workstream or section header)
+            if delta > 0 {
+                if pos >= len - 1 {
+                    break; // At end
                 }
-
-                // Stop on any item (workstream or section header)
-                // This allows navigating to collapsed sections to expand them
-                break;
+                pos += 1;
+            } else {
+                if pos == 0 {
+                    break; // At start
+                }
+                pos -= 1;
             }
         }
 
@@ -685,9 +717,11 @@ impl App {
     }
 
     pub fn open_link_menu(&mut self) {
-        self.show_link_menu = !self.show_link_menu;
-        if !self.show_link_menu {
+        if self.show_link_menu() {
+            self.modal = ModalState::None;
             self.clear_navigation();
+        } else {
+            self.modal = ModalState::LinkMenu { show_links_popup: false };
         }
     }
 
@@ -840,22 +874,25 @@ impl App {
     }
 
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        if self.show_help() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::Help { tab: 0 };
+        }
     }
 
     // Description modal
     pub fn open_description_modal(&mut self) {
         if let Some(ws) = self.modal_issue() {
             if ws.linear_issue.description.is_some() {
-                self.show_description_modal = true;
+                self.modal = ModalState::Description;
                 self.description_scroll = 0;
-                self.show_link_menu = false;
             }
         }
     }
 
     pub fn close_description_modal(&mut self) {
-        self.show_description_modal = false;
+        self.modal = ModalState::None;
         self.description_scroll = 0;
     }
 
@@ -881,22 +918,30 @@ impl App {
 
     // Sorting
     pub fn toggle_sort_menu(&mut self) {
-        self.show_sort_menu = !self.show_sort_menu;
+        if self.show_sort_menu() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::SortMenu;
+        }
     }
 
     pub fn set_sort_mode(&mut self, mode: crate::data::SortMode) {
         self.state.sort_mode = mode;
-        self.show_sort_menu = false;
+        self.modal = ModalState::None;
         self.rebuild_visual_items();
     }
 
     // Resize mode
     pub fn toggle_resize_mode(&mut self) {
-        self.resize_mode = !self.resize_mode;
+        if self.resize_mode() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::Resize;
+        }
     }
 
     pub fn exit_resize_mode(&mut self) {
-        self.resize_mode = false;
+        self.modal = ModalState::None;
     }
 
     pub fn resize_next_column(&mut self) {
@@ -927,7 +972,11 @@ impl App {
 
     // Filter methods
     pub fn toggle_filter_menu(&mut self) {
-        self.show_filter_menu = !self.show_filter_menu;
+        if self.show_filter_menu() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::FilterMenu;
+        }
     }
 
     pub fn toggle_cycle_filter(&mut self, cycle_idx: usize) {

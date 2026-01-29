@@ -13,7 +13,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
 
-pub use app::{App, RefreshProgress, RefreshResult};
+pub use app::{App, ModalState, RefreshProgress, RefreshResult};
 
 pub async fn run(config: Config) -> Result<()> {
     // Check if stdout is a terminal
@@ -84,7 +84,7 @@ async fn run_app(
                         }
                         _ => {}
                     }
-                } else if app.show_description_modal {
+                } else if app.show_description_modal() {
                     // Handle description modal key presses
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('q') => {
@@ -117,21 +117,21 @@ async fn run_app(
                         }
                         _ => {}
                     }
-                } else if app.show_help {
+                } else if app.show_help() {
                     // Handle help modal key presses
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                            app.show_help = false;
+                            app.modal = ModalState::None;
                         }
                         KeyCode::Char('1') => {
-                            app.help_tab = 0;
+                            app.modal = ModalState::Help { tab: 0 };
                         }
                         KeyCode::Char('2') => {
-                            app.help_tab = 1;
+                            app.modal = ModalState::Help { tab: 1 };
                         }
                         _ => {}
                     }
-                } else if app.resize_mode {
+                } else if app.resize_mode() {
                     // Handle resize mode key presses
                     match key.code {
                         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('R') => {
@@ -151,12 +151,12 @@ async fn run_app(
                         }
                         _ => {}
                     }
-                } else if app.show_sort_menu {
+                } else if app.show_sort_menu() {
                     // Handle sort menu key presses
                     use crate::data::SortMode;
                     match key.code {
                         KeyCode::Esc => {
-                            app.show_sort_menu = false;
+                            app.modal = ModalState::None;
                         }
                         KeyCode::Char(c) if ('1'..='6').contains(&c) => {
                             let idx = c.to_digit(10).unwrap() as usize;
@@ -166,35 +166,31 @@ async fn run_app(
                         }
                         _ => {}
                     }
-                } else if app.show_link_menu {
+                } else if app.show_link_menu() {
                     // Handle links popup first (nested modal)
-                    if app.show_links_popup {
+                    if app.show_links_popup() {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('l') => {
-                                app.show_links_popup = false;
+                                app.modal = ModalState::LinkMenu { show_links_popup: false };
                             }
                             KeyCode::Char('1') => {
                                 app.open_linear_link().await?;
-                                app.show_links_popup = false;
-                                app.show_link_menu = false;
+                                app.modal = ModalState::None;
                                 app.clear_navigation();
                             }
                             KeyCode::Char('2') => {
                                 app.open_github_link().await?;
-                                app.show_links_popup = false;
-                                app.show_link_menu = false;
+                                app.modal = ModalState::None;
                                 app.clear_navigation();
                             }
                             KeyCode::Char('3') => {
                                 app.open_vercel_link().await?;
-                                app.show_links_popup = false;
-                                app.show_link_menu = false;
+                                app.modal = ModalState::None;
                                 app.clear_navigation();
                             }
                             KeyCode::Char('4') => {
                                 app.teleport_to_session().await?;
-                                app.show_links_popup = false;
-                                app.show_link_menu = false;
+                                app.modal = ModalState::None;
                                 app.clear_navigation();
                             }
                             _ => {}
@@ -225,7 +221,7 @@ async fn run_app(
                                     app.clear_modal_search();
                                 } else if !app.navigate_back() {
                                     // Stack empty, close the menu
-                                    app.show_link_menu = false;
+                                    app.modal = ModalState::None;
                                     app.clear_navigation();
                                 }
                             }
@@ -235,7 +231,7 @@ async fn run_app(
                             }
                             // Open links popup
                             KeyCode::Char('l') => {
-                                app.show_links_popup = true;
+                                app.modal = ModalState::LinkMenu { show_links_popup: true };
                             }
                             // j/k navigation for sub-issues
                             KeyCode::Char('j') | KeyCode::Down => {
@@ -250,7 +246,7 @@ async fn run_app(
                                     if !app.navigate_to_selected_child() {
                                         // Child not in workstreams, open in browser
                                         app.open_selected_child_issue()?;
-                                        app.show_link_menu = false;
+                                        app.modal = ModalState::None;
                                         app.clear_navigation();
                                     }
                                     // If navigated, stay in modal (don't close)
@@ -261,7 +257,7 @@ async fn run_app(
                                 if !app.navigate_to_parent() {
                                     // Parent not in workstreams, open in browser
                                     app.open_parent_issue()?;
-                                    app.show_link_menu = false;
+                                    app.modal = ModalState::None;
                                     app.clear_navigation();
                                 }
                                 // If navigated, stay in modal (don't close)
@@ -275,7 +271,7 @@ async fn run_app(
                                             if let Some(digit) = c.to_digit(10) {
                                                 if digit >= 1 && digit <= 9 {
                                                     app.open_document((digit - 1) as usize)?;
-                                                    app.show_link_menu = false;
+                                                    app.modal = ModalState::None;
                                                     app.clear_navigation();
                                                 }
                                             } else {
@@ -304,7 +300,7 @@ async fn run_app(
                                                     if !app.navigate_to_child(idx) {
                                                         // Child not in workstreams, open in browser
                                                         app.open_child_issue(idx)?;
-                                                        app.show_link_menu = false;
+                                                        app.modal = ModalState::None;
                                                         app.clear_navigation();
                                                     }
                                                 }
@@ -316,12 +312,12 @@ async fn run_app(
                             _ => {}
                         }
                     }
-                } else if app.show_filter_menu {
+                } else if app.show_filter_menu() {
                     // Handle filter menu key presses
                     use crate::data::LinearPriority;
                     match key.code {
                         KeyCode::Esc => {
-                            app.show_filter_menu = false;
+                            app.modal = ModalState::None;
                         }
                         // Cycle filters (0-9)
                         KeyCode::Char(c) if ('0'..='9').contains(&c) => {
