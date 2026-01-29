@@ -190,6 +190,209 @@ impl App {
         }
     }
 
+    /// Process a message and update app state (Elm Architecture update function).
+    ///
+    /// Returns `Ok(true)` if the app should quit, `Ok(false)` to continue.
+    pub async fn update(&mut self, msg: super::Message) -> anyhow::Result<bool> {
+        use super::Message;
+        match msg {
+            // ─────────────────────────────────────────────────────────────────
+            // App lifecycle
+            // ─────────────────────────────────────────────────────────────────
+            Message::Quit => return Ok(true),
+            Message::Refresh => self.start_background_refresh(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Navigation
+            // ─────────────────────────────────────────────────────────────────
+            Message::MoveUp => self.move_selection(-1),
+            Message::MoveDown => self.move_selection(1),
+            Message::GotoTop => self.go_to_top(),
+            Message::GotoBottom => self.go_to_bottom(),
+            Message::PageUp => self.page_up(),
+            Message::PageDown => self.page_down(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Selection actions
+            // ─────────────────────────────────────────────────────────────────
+            Message::ExpandSection => self.expand_current_section(),
+            Message::CollapseSection => self.collapse_current_section(),
+            Message::OpenPrimaryLink => {
+                self.open_primary_link().await?;
+            }
+            Message::OpenLinkMenu => self.open_link_menu(),
+            Message::TeleportToSession => {
+                self.teleport_to_session().await?;
+                // Close modal and clear navigation if in link menu
+                if self.show_link_menu() {
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Search mode
+            // ─────────────────────────────────────────────────────────────────
+            Message::EnterSearch { search_all } => self.enter_search(search_all),
+            Message::ExitSearch => self.exit_search(),
+            Message::ConfirmSearch => self.confirm_search(),
+            Message::SearchInput(c) => {
+                self.state.search_query.push(c);
+                self.update_search();
+            }
+            Message::SearchBackspace => {
+                self.state.search_query.pop();
+                self.update_search();
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Modal toggles
+            // ─────────────────────────────────────────────────────────────────
+            Message::ToggleHelp => self.toggle_help(),
+            Message::ToggleSortMenu => self.toggle_sort_menu(),
+            Message::ToggleFilterMenu => self.toggle_filter_menu(),
+            Message::TogglePreview => self.toggle_preview(),
+            Message::ToggleResizeMode => self.toggle_resize_mode(),
+            Message::CloseModal => self.modal = ModalState::None,
+
+            // ─────────────────────────────────────────────────────────────────
+            // Help modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::SetHelpTab(tab) => {
+                self.modal = ModalState::Help { tab };
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Sort modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::SetSortMode(mode) => self.set_sort_mode(mode),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Filter modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::ToggleCycleFilter(idx) => self.toggle_cycle_filter(idx),
+            Message::TogglePriorityFilter(priority) => self.toggle_priority_filter(priority),
+            Message::ToggleSubIssues => self.toggle_sub_issues(),
+            Message::ClearAllFilters => self.clear_all_filters(),
+            Message::SelectAllFilters => self.select_all_filters(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Resize mode
+            // ─────────────────────────────────────────────────────────────────
+            Message::ExitResizeMode => self.exit_resize_mode(),
+            Message::ResizeColumnNarrower => self.resize_column_narrower(),
+            Message::ResizeColumnWider => self.resize_column_wider(),
+            Message::ResizeNextColumn => self.resize_next_column(),
+            Message::ResizePrevColumn => self.resize_prev_column(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Link menu modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::OpenLinksPopup => {
+                self.modal = ModalState::LinkMenu { show_links_popup: true };
+            }
+            Message::CloseLinksPopup => {
+                self.modal = ModalState::LinkMenu { show_links_popup: false };
+            }
+            Message::OpenLinearLink => {
+                self.open_linear_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenGithubLink => {
+                self.open_github_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenVercelLink => {
+                self.open_vercel_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Link menu navigation
+            // ─────────────────────────────────────────────────────────────────
+            Message::NextChildIssue => self.next_child_issue(),
+            Message::PrevChildIssue => self.prev_child_issue(),
+            Message::NavigateToSelectedChild => {
+                if self.selected_child_idx.is_some() {
+                    if !self.navigate_to_selected_child() {
+                        // Child not in workstreams, open in browser
+                        self.open_selected_child_issue()?;
+                        self.modal = ModalState::None;
+                        self.clear_navigation();
+                    }
+                }
+            }
+            Message::NavigateToParent => {
+                if !self.navigate_to_parent() {
+                    // Parent not in workstreams, open in browser
+                    self.open_parent_issue()?;
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+            Message::OpenDocument(idx) => {
+                self.open_document(idx)?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenDescriptionModal => self.open_description_modal(),
+            Message::NavigateToChild(idx) => {
+                if !self.navigate_to_child(idx) {
+                    // Child not in workstreams, open in browser
+                    self.open_child_issue(idx)?;
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Description modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::ScrollDescription(delta) => {
+                if delta == -10000 {
+                    // Special value for "go to top"
+                    self.description_scroll = 0;
+                } else {
+                    self.scroll_description(delta);
+                }
+            }
+            Message::CloseDescriptionModal => self.close_description_modal(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Modal search
+            // ─────────────────────────────────────────────────────────────────
+            Message::EnterModalSearch => self.enter_modal_search(),
+            Message::ExitModalSearch => self.exit_modal_search(),
+            Message::ModalSearchInput(c) => {
+                self.modal_search_query.push(c);
+            }
+            Message::ModalSearchBackspace => {
+                self.modal_search_query.pop();
+            }
+            Message::ClearModalSearch => self.clear_modal_search(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Navigation stack
+            // ─────────────────────────────────────────────────────────────────
+            Message::NavigateBack => {
+                if !self.navigate_back() {
+                    // Stack empty, close the menu
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // No-op
+            // ─────────────────────────────────────────────────────────────────
+            Message::None => {}
+        }
+        Ok(false)
+    }
+
     /// Advance spinner frame (call on tick while loading)
     pub fn tick_spinner(&mut self) {
         if self.is_loading {
