@@ -1,0 +1,52 @@
+[package]
+name = "panopticon"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal dashboard for monitoring AI agent sessions linked to Linear, GitHub, and Vercel"
+license = "MIT"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.29"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# GraphQL (for Linear subscriptions)
+graphql_client = "0.14"
+
+# JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Configuration
+toml = "0.8"
+directories = "5"
+dirs = "5"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Fuzzy search
+nucleo = "0.5"
+
+# File watching (for Claude Code state)
+notify = "7"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
