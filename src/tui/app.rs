@@ -1,13 +1,21 @@
 use crate::config::Config;
-use crate::data::{AppState, LinearCycle, LinearPriority, LinearStatus, VisualItem, Workstream};
+use crate::data::{AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SortMode, VisualItem, Workstream};
 use crate::integrations;
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
+
+/// Timeout for refresh operations (60 seconds)
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Cooldown between user-action triggered refreshes (10 seconds)
+/// Prevents spamming the API when user rapidly opens/closes modals
+const USER_ACTION_REFRESH_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -103,12 +111,17 @@ pub struct App {
     pub filter_priorities: HashSet<LinearPriority>,
     pub available_cycles: Vec<LinearCycle>,
     pub show_sub_issues: bool,
+    pub show_completed: bool,
+    pub show_canceled: bool,
 
     // Modal navigation state
+    pub parent_selected: bool,
     pub selected_child_idx: Option<usize>,
     pub issue_navigation_stack: Vec<String>,
     pub modal_issue_id: Option<String>,
     pub sub_issues_scroll: usize,
+    /// Dynamic visible height for sub-issues (UI sets this based on terminal size)
+    sub_issues_visible_height: usize,
     pub description_scroll: usize,
     pub modal_search_mode: bool,
     pub modal_search_query: String,
@@ -117,6 +130,14 @@ pub struct App {
     pub refresh_rx: Option<mpsc::Receiver<RefreshResult>>,
     /// Progress tracking for incremental updates
     pub refresh_progress: Option<RefreshProgress>,
+
+    // Refresh robustness fields
+    /// Shadow storage for incoming workstreams during refresh
+    /// On success: swap with state.workstreams
+    /// On error: discard and keep original data
+    shadow_workstreams: Vec<Workstream>,
+    /// Timestamp when refresh started (for timeout detection)
+    refresh_started_at: Option<Instant>,
 }
 
 // Modal state accessors (backward-compatible interface)
@@ -179,15 +200,21 @@ impl App {
             filter_priorities: HashSet::new(),
             available_cycles: Vec::new(),
             show_sub_issues: true,
+            show_completed: false,
+            show_canceled: false,
+            parent_selected: false,
             selected_child_idx: None,
             issue_navigation_stack: Vec::new(),
             modal_issue_id: None,
             sub_issues_scroll: 0,
+            sub_issues_visible_height: 8, // Default, UI updates based on terminal size
             description_scroll: 0,
             modal_search_mode: false,
             modal_search_query: String::new(),
             refresh_rx: None,
             refresh_progress: None,
+            shadow_workstreams: Vec::new(),
+            refresh_started_at: None,
         }
     }
 
@@ -273,6 +300,8 @@ impl App {
             Message::ToggleCycleFilter(idx) => self.toggle_cycle_filter(idx),
             Message::TogglePriorityFilter(priority) => self.toggle_priority_filter(priority),
             Message::ToggleSubIssues => self.toggle_sub_issues(),
+            Message::ToggleCompletedFilter => self.toggle_completed_filter(),
+            Message::ToggleCanceledFilter => self.toggle_canceled_filter(),
             Message::ClearAllFilters => self.clear_all_filters(),
             Message::SelectAllFilters => self.select_all_filters(),
 
@@ -320,15 +349,16 @@ impl App {
             Message::NextChildIssue => self.next_child_issue(),
             Message::PrevChildIssue => self.prev_child_issue(),
             Message::NavigateToSelectedChild => {
-                // Only navigate if child exists in workstreams
-                // Don't open browser unexpectedly - user can use 'l' for links
-                if self.selected_child_idx.is_some() {
+                // Navigate to parent or child depending on what's selected
+                // Does nothing if issue not found in workstreams (use 'l' for links)
+                if self.parent_selected {
+                    self.navigate_to_parent();
+                } else if self.selected_child_idx.is_some() {
                     self.navigate_to_selected_child();
                 }
             }
             Message::NavigateToParent => {
-                // Only navigate if parent exists in workstreams
-                // Don't open browser unexpectedly - user can use 'l' for links
+                // Direct parent navigation (kept for compatibility)
                 self.navigate_to_parent();
             }
             Message::OpenDocument(idx) => {
@@ -493,6 +523,10 @@ impl App {
     }
 
     /// Start refresh in background (non-blocking)
+    ///
+    /// Uses shadow refresh pattern: new data goes to shadow_workstreams,
+    /// only replacing main data on successful completion. This prevents
+    /// data loss on transient errors.
     pub fn start_background_refresh(&mut self) {
         // Don't start another refresh if one is already in progress
         if self.refresh_rx.is_some() {
@@ -500,7 +534,8 @@ impl App {
         }
 
         self.is_loading = true;
-        self.state.workstreams.clear(); // Clear existing data for incremental loading
+        self.refresh_started_at = Some(Instant::now()); // Track for timeout detection
+        self.shadow_workstreams.clear(); // Clear shadow for new data (keep main data!)
         self.refresh_progress = Some(RefreshProgress {
             total_issues: 0,
             completed: 0,
@@ -520,8 +555,55 @@ impl App {
         });
     }
 
+    /// Trigger a background refresh if enough time has passed since last refresh.
+    /// Used for user-action triggered refreshes (opening issue details, etc.)
+    /// This is "optimistic" - shows cached data immediately, refreshes in background.
+    pub fn trigger_user_action_refresh(&mut self) {
+        // Skip if not in a Tokio runtime (e.g., during tests)
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+
+        // Skip if refresh already in progress
+        if self.refresh_rx.is_some() {
+            return;
+        }
+
+        // Check if enough time has passed since last refresh
+        let should_refresh = match self.state.last_refresh {
+            Some(last) => {
+                let elapsed = Utc::now().signed_duration_since(last);
+                elapsed.num_seconds() >= USER_ACTION_REFRESH_COOLDOWN.as_secs() as i64
+            }
+            None => true, // Never refreshed, definitely should refresh
+        };
+
+        if should_refresh {
+            self.start_background_refresh();
+        }
+    }
+
     /// Poll for refresh results (non-blocking, call from event loop tick)
+    ///
+    /// Implements:
+    /// - Shadow refresh pattern (new data in shadow, swap on success)
+    /// - Timeout detection (fails refresh after REFRESH_TIMEOUT)
+    /// - Monotonic progress tracking (derived from received workstream count)
     pub fn poll_refresh(&mut self) -> bool {
+        // Check for timeout first
+        if let Some(started) = self.refresh_started_at {
+            if started.elapsed() > REFRESH_TIMEOUT {
+                tracing::warn!("Refresh timed out after {:?}", REFRESH_TIMEOUT);
+                self.is_loading = false;
+                self.refresh_rx = None;
+                self.refresh_started_at = None;
+                self.refresh_progress = None;
+                self.shadow_workstreams.clear();
+                self.error_message = Some("Refresh timed out".to_string());
+                return true;
+            }
+        }
+
         // Take ownership of the receiver to avoid borrow issues
         let Some(mut rx) = self.refresh_rx.take() else {
             return false;
@@ -529,23 +611,35 @@ impl App {
 
         let mut completed = false;
         let mut should_restore = true;
-        let mut items_added = 0usize;
 
         // Non-blocking receive of all available results
         while let Ok(result) = rx.try_recv() {
             match result {
                 RefreshResult::Progress(progress) => {
-                    self.refresh_progress = Some(progress);
+                    // Only update stage and total, completed is derived from workstream count
+                    if let Some(ref mut p) = self.refresh_progress {
+                        p.total_issues = progress.total_issues;
+                        p.current_stage = progress.current_stage;
+                        // Don't overwrite completed - it's derived from shadow_workstreams.len()
+                    } else {
+                        self.refresh_progress = Some(progress);
+                    }
                 }
                 RefreshResult::Workstream(ws) => {
-                    self.state.workstreams.push(ws);
-                    items_added += 1;
+                    // Add to shadow storage, not main data
+                    self.shadow_workstreams.push(ws);
+                    // Monotonic progress: always derived from received count
                     if let Some(ref mut p) = self.refresh_progress {
-                        p.completed += 1;
+                        p.completed = self.shadow_workstreams.len();
                     }
                 }
                 RefreshResult::Complete => {
+                    // Success: swap shadow with main data
+                    std::mem::swap(&mut self.state.workstreams, &mut self.shadow_workstreams);
+                    self.shadow_workstreams.clear();
+
                     self.is_loading = false;
+                    self.refresh_started_at = None;
                     self.refresh_progress = None;
                     self.state.last_refresh = Some(Utc::now());
                     self.update_available_cycles();
@@ -557,20 +651,39 @@ impl App {
                     should_restore = false;
                 }
                 RefreshResult::Error(msg) => {
+                    // Error: discard shadow, keep original data
+                    self.shadow_workstreams.clear();
+
                     self.is_loading = false;
+                    self.refresh_started_at = None;
                     self.refresh_progress = None;
-                    self.error_message = Some(format!("Refresh failed: {}", msg));
+                    // Include note about preserving previous data
+                    self.error_message = Some(format!("Refresh failed: {} (keeping previous data)", msg));
                     completed = true;
                     should_restore = false;
                 }
             }
         }
 
-        // Rebuild visual items if new workstreams arrived (progressive display)
-        if items_added > 0 && !completed {
-            self.apply_filters();
-            self.rebuild_visual_items();
+        // Detect channel disconnect (sender dropped without Complete/Error)
+        // This can happen if the background task panics
+        if rx.is_closed() && !completed {
+            tracing::warn!("Refresh channel closed unexpectedly");
+            self.shadow_workstreams.clear();
+            self.is_loading = false;
+            self.refresh_started_at = None;
+            self.refresh_progress = None;
+            self.error_message = Some("Refresh interrupted (keeping previous data)".to_string());
+            return true;
         }
+
+        // Note: With shadow refresh pattern, we DON'T update the display during refresh.
+        // The user sees the old data with a loading indicator, and new data appears
+        // all at once on completion. This is safer - if refresh fails, the old data
+        // is still visible. The progress bar shows "X/Y completed" for feedback.
+        //
+        // Progressive display is intentionally disabled to maintain data safety.
+        // The tradeoff: less visual feedback during refresh, but no data loss on error.
 
         // Restore receiver if not completed
         if should_restore {
@@ -587,12 +700,18 @@ impl App {
         let mut max_title_len = 8usize; // "Title" header + padding
         let mut max_pr_len = 8usize; // "PR" header + padding
         let mut max_agent_len = 8usize; // "Agent" header + padding
+        let mut has_sub_issues = false;
 
         for ws in &self.state.workstreams {
             let issue = &ws.linear_issue;
 
             // ID column
             max_id_len = max_id_len.max(issue.identifier.width());
+
+            // Check if this is a sub-issue (has parent) - needs extra width for "└ " prefix
+            if issue.parent.is_some() {
+                has_sub_issues = true;
+            }
 
             // Title column (cap at reasonable max to prevent single long title from dominating)
             max_title_len = max_title_len.max(issue.title.width().min(50));
@@ -611,7 +730,9 @@ impl App {
         }
 
         // Apply calculated widths with some padding
-        self.column_widths[COL_IDX_ID] = max_id_len + 1;
+        // Add 2 extra chars for sub-issue prefix "└ " if any sub-issues exist
+        let sub_issue_padding = if has_sub_issues { 2 } else { 0 };
+        self.column_widths[COL_IDX_ID] = max_id_len + 1 + sub_issue_padding;
         self.column_widths[COL_IDX_TITLE] = max_title_len.min(40); // Cap title at 40
         self.column_widths[COL_IDX_PR] = max_pr_len.min(15);
         self.column_widths[COL_IDX_AGENT] = max_agent_len.min(12);
@@ -883,9 +1004,12 @@ impl App {
                 .push(current.linear_issue.id.clone());
         }
         self.modal_issue_id = Some(issue_id.to_string());
-        self.selected_child_idx = None;
         self.sub_issues_scroll = 0;
         self.description_scroll = 0;
+
+        // Pre-select parent if exists, otherwise first child
+        // Note: must check after setting modal_issue_id so modal_issue() returns the new issue
+        self.pre_select_for_modal_issue();
     }
 
     /// Go back in the navigation stack
@@ -893,17 +1017,19 @@ impl App {
     pub fn navigate_back(&mut self) -> bool {
         if let Some(prev_id) = self.issue_navigation_stack.pop() {
             self.modal_issue_id = Some(prev_id);
-            self.selected_child_idx = None;
             self.sub_issues_scroll = 0;
             self.description_scroll = 0;
+            // Re-run pre-selection for the issue we're returning to
+            self.pre_select_for_modal_issue();
             true
         } else {
             // Stack empty, clear modal_issue_id to return to selected workstream
             if self.modal_issue_id.is_some() {
                 self.modal_issue_id = None;
-                self.selected_child_idx = None;
                 self.sub_issues_scroll = 0;
                 self.description_scroll = 0;
+                // Re-run pre-selection for the original selected workstream
+                self.pre_select_for_modal_issue();
                 true
             } else {
                 false
@@ -915,6 +1041,7 @@ impl App {
     pub fn clear_navigation(&mut self) {
         self.issue_navigation_stack.clear();
         self.modal_issue_id = None;
+        self.parent_selected = false;
         self.selected_child_idx = None;
         self.sub_issues_scroll = 0;
         self.modal_search_mode = false;
@@ -986,6 +1113,38 @@ impl App {
             self.clear_navigation();
         } else {
             self.modal = ModalState::LinkMenu { show_links_popup: false };
+            // Pre-select parent if exists, otherwise first child
+            self.pre_select_in_link_menu();
+            // Trigger optimistic background refresh when opening issue details
+            self.trigger_user_action_refresh();
+        }
+    }
+
+    /// Pre-select the first navigable item in link menu (parent or first child)
+    fn pre_select_in_link_menu(&mut self) {
+        self.pre_select_for_modal_issue();
+    }
+
+    /// Pre-select parent or first child for the current modal issue
+    /// Uses modal_issue() which respects modal_issue_id if set
+    fn pre_select_for_modal_issue(&mut self) {
+        let has_parent = self
+            .modal_issue()
+            .map(|ws| ws.linear_issue.parent.is_some())
+            .unwrap_or(false);
+        // Use sorted/filtered children count (matches UI display)
+        let children_count = self.get_sorted_filtered_children().len();
+
+        if has_parent {
+            self.parent_selected = true;
+            self.selected_child_idx = None;
+        } else if children_count > 0 {
+            self.parent_selected = false;
+            self.selected_child_idx = Some(0);
+            self.sub_issues_scroll = 0;
+        } else {
+            self.parent_selected = false;
+            self.selected_child_idx = None;
         }
     }
 
@@ -1008,47 +1167,81 @@ impl App {
         Ok(())
     }
 
-    /// Maximum visible sub-issues in the link menu
-    const SUB_ISSUES_VISIBLE_HEIGHT: usize = 8;
+    /// Get the current visible height for sub-issues scroll
+    pub fn sub_issues_visible_height(&self) -> usize {
+        self.sub_issues_visible_height
+    }
 
-    /// Navigate to next sub-issue in link menu
+    /// Set the visible height for sub-issues (called by UI based on terminal size)
+    pub fn set_sub_issues_visible_height(&mut self, height: usize) {
+        self.sub_issues_visible_height = height.clamp(3, 10);
+    }
+
+    /// Navigate to next item in link menu (parent → children cycle)
+    /// Uses sorted/filtered children count to match what's displayed in UI
     pub fn next_child_issue(&mut self) {
-        if let Some(ws) = self.modal_issue() {
-            let children_count = ws.linear_issue.children.len();
-            if children_count == 0 {
-                return;
+        let has_parent = self.modal_issue()
+            .map(|ws| ws.linear_issue.parent.is_some())
+            .unwrap_or(false);
+
+        // Use sorted/filtered children count (matches UI display)
+        let children_count = self.get_sorted_filtered_children().len();
+
+        if self.parent_selected {
+            // Move from parent to first child (if any)
+            if children_count > 0 {
+                self.parent_selected = false;
+                self.selected_child_idx = Some(0);
+                self.sub_issues_scroll = 0;
             }
-
-            let new_idx = match self.selected_child_idx {
-                None => 0,
-                Some(idx) => (idx + 1).min(children_count.saturating_sub(1)),
-            };
-            self.selected_child_idx = Some(new_idx);
-
-            // Auto-scroll to keep selection visible
-            let visible_end = self.sub_issues_scroll + Self::SUB_ISSUES_VISIBLE_HEIGHT;
-            if new_idx >= visible_end {
-                self.sub_issues_scroll = new_idx.saturating_sub(Self::SUB_ISSUES_VISIBLE_HEIGHT - 1);
+        } else if let Some(idx) = self.selected_child_idx {
+            // Move to next child
+            if idx + 1 < children_count {
+                self.selected_child_idx = Some(idx + 1);
+                // Auto-scroll to keep selection visible (uses dynamic visible height)
+                let visible_height = self.sub_issues_visible_height;
+                let visible_end = self.sub_issues_scroll + visible_height;
+                if idx + 1 >= visible_end {
+                    self.sub_issues_scroll = (idx + 1).saturating_sub(visible_height - 1);
+                }
+            }
+        } else {
+            // Nothing selected - select parent first if exists, else first child
+            if has_parent {
+                self.parent_selected = true;
+            } else if children_count > 0 {
+                self.selected_child_idx = Some(0);
+                self.sub_issues_scroll = 0;
             }
         }
     }
 
-    /// Navigate to previous sub-issue in link menu
+    /// Navigate to previous item in link menu (children → parent cycle)
+    /// Uses sorted/filtered children to match what's displayed in UI
     pub fn prev_child_issue(&mut self) {
-        if let Some(ws) = self.modal_issue() {
-            if ws.linear_issue.children.is_empty() {
-                return;
+        let has_parent = self.modal_issue()
+            .map(|ws| ws.linear_issue.parent.is_some())
+            .unwrap_or(false);
+
+        if self.parent_selected {
+            // Already at top (parent), do nothing
+        } else if let Some(idx) = self.selected_child_idx {
+            if idx == 0 && has_parent {
+                // Move from first child to parent
+                self.selected_child_idx = None;
+                self.parent_selected = true;
+            } else if idx > 0 {
+                // Move to previous child
+                self.selected_child_idx = Some(idx - 1);
+                // Auto-scroll to keep selection visible
+                if idx - 1 < self.sub_issues_scroll {
+                    self.sub_issues_scroll = idx - 1;
+                }
             }
-
-            let new_idx = match self.selected_child_idx {
-                None => 0,
-                Some(idx) => idx.saturating_sub(1),
-            };
-            self.selected_child_idx = Some(new_idx);
-
-            // Auto-scroll to keep selection visible
-            if new_idx < self.sub_issues_scroll {
-                self.sub_issues_scroll = new_idx;
+        } else {
+            // Nothing selected - select parent if exists
+            if has_parent {
+                self.parent_selected = true;
             }
         }
     }
@@ -1097,10 +1290,82 @@ impl App {
         false
     }
 
+    /// Get sorted/filtered children for the modal issue (matches UI rendering logic)
+    fn get_sorted_filtered_children(&self) -> Vec<&LinearChildRef> {
+        let Some(ws) = self.modal_issue() else {
+            return Vec::new();
+        };
+
+        // Filter children based on modal search query
+        let filtered: Vec<&LinearChildRef> = if self.modal_search_query.is_empty() {
+            ws.linear_issue.children.iter().collect()
+        } else {
+            let mut fuzzy = FuzzySearch::new();
+            ws.linear_issue
+                .children
+                .iter()
+                .filter(|child| {
+                    let text = format!(
+                        "{} {} {} {}",
+                        child.identifier,
+                        child.title,
+                        child.status.display_name(),
+                        child.priority.label()
+                    );
+                    fuzzy.multi_term_match(&self.modal_search_query, &text).is_some()
+                })
+                .collect()
+        };
+
+        // Sort filtered children (same logic as UI)
+        self.sort_children(filtered)
+    }
+
+    /// Sort children by current sort mode
+    /// NOTE: This must match the sorting logic in ui.rs:sort_filtered_children
+    fn sort_children<'a>(&self, mut children: Vec<&'a LinearChildRef>) -> Vec<&'a LinearChildRef> {
+        match self.state.sort_mode {
+            SortMode::ByLinearStatus => {
+                children.sort_by_key(|c| c.status.sort_order());
+            }
+            SortMode::ByPriority => {
+                children.sort_by_key(|c| c.priority.sort_order());
+            }
+            // Children don't have these fields, sort by status as fallback (matches UI)
+            SortMode::ByAgentStatus
+            | SortMode::ByVercelStatus
+            | SortMode::ByPRActivity
+            | SortMode::ByLastUpdated => {
+                children.sort_by_key(|c| c.status.sort_order());
+            }
+        }
+        children
+    }
+
     /// Navigate to selected child issue in modal
+    /// Uses the sorted/filtered list to find the correct child
     pub fn navigate_to_selected_child(&mut self) -> bool {
-        if let Some(idx) = self.selected_child_idx {
-            return self.navigate_to_child(idx);
+        let Some(idx) = self.selected_child_idx else {
+            return false;
+        };
+
+        // Get the sorted/filtered children list (matches UI rendering)
+        let sorted_children = self.get_sorted_filtered_children();
+        let Some(child) = sorted_children.get(idx) else {
+            return false;
+        };
+
+        // Find the child in workstreams by identifier
+        let child_identifier = child.identifier.clone();
+        if let Some(child_ws) = self
+            .state
+            .workstreams
+            .iter()
+            .find(|w| w.linear_issue.identifier == child_identifier)
+        {
+            let target_id = child_ws.linear_issue.id.clone();
+            self.navigate_to_issue(&target_id);
+            return true;
         }
         false
     }
@@ -1162,7 +1427,7 @@ impl App {
         }
     }
 
-    pub fn set_sort_mode(&mut self, mode: crate::data::SortMode) {
+    pub fn set_sort_mode(&mut self, mode: SortMode) {
         self.state.sort_mode = mode;
         self.modal = ModalState::None;
         self.rebuild_visual_items();
@@ -1270,12 +1535,36 @@ impl App {
         self.rebuild_visual_items();
     }
 
+    pub fn toggle_completed_filter(&mut self) {
+        self.show_completed = !self.show_completed;
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
+    pub fn toggle_canceled_filter(&mut self) {
+        self.show_canceled = !self.show_canceled;
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
     /// Apply filters to create filtered_indices
     pub fn apply_filters(&mut self) {
         self.filtered_indices = self.state.workstreams
             .iter()
             .enumerate()
             .filter(|(_, ws)| {
+                let status = ws.linear_issue.status;
+
+                // Completed filter (hide completed unless explicitly shown)
+                if !self.show_completed && status == LinearStatus::Done {
+                    return false;
+                }
+
+                // Canceled filter (hide canceled/duplicate unless explicitly shown)
+                if !self.show_canceled && (status == LinearStatus::Canceled || status == LinearStatus::Duplicate) {
+                    return false;
+                }
+
                 // Cycle filter (empty = show all)
                 if !self.filter_cycles.is_empty() {
                     match &ws.linear_issue.cycle {
