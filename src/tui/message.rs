@@ -29,10 +29,13 @@ pub enum Message {
     GotoTop,
     /// Go to the last item
     GotoBottom,
-    /// Page up (half screen)
-    PageUp,
-    /// Page down (half screen)
-    PageDown,
+    /// Jump to next section header
+    JumpNextSection,
+    /// Jump to previous section header
+    JumpPrevSection,
+    /// Scroll viewport without moving selection (Ctrl+e/y vim-style)
+    /// Positive = scroll down, negative = scroll up
+    ScrollViewport(i32),
 
     // ─────────────────────────────────────────────────────────────────────────
     // Selection actions
@@ -41,8 +44,8 @@ pub enum Message {
     ExpandSection,
     /// Collapse current section
     CollapseSection,
-    /// Open the primary link for selected item
-    OpenPrimaryLink,
+    /// Toggle fold of section containing current item (z key)
+    ToggleSectionFold,
     /// Open the link menu modal
     OpenLinkMenu,
     /// Teleport to Claude session
@@ -61,6 +64,10 @@ pub enum Message {
     SearchInput(char),
     /// Remove last character from search query
     SearchBackspace,
+    /// Jump to next search match (n key)
+    NextSearchMatch,
+    /// Jump to previous search match (N key)
+    PrevSearchMatch,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Modal toggles

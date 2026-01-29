@@ -1,5 +1,5 @@
 mod app;
-mod input;
+pub mod input;
 mod message;
 pub mod search;
 mod ui;
@@ -66,8 +66,8 @@ async fn run_app(
 
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Resize(width, _height) => {
-                    app.recalculate_column_widths(width);
+                Event::Resize(_width, _height) => {
+                    // Layout is computed per draw based on current frame size.
                 }
                 Event::Key(key) => {
                     let msg = input::dispatch(app, &mut input_state, key);

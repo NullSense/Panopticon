@@ -7,6 +7,7 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use unicode_width::UnicodeWidthStr;
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -209,17 +210,16 @@ impl App {
             Message::MoveDown => self.move_selection(1),
             Message::GotoTop => self.go_to_top(),
             Message::GotoBottom => self.go_to_bottom(),
-            Message::PageUp => self.page_up(),
-            Message::PageDown => self.page_down(),
+            Message::JumpNextSection => self.jump_next_section(),
+            Message::JumpPrevSection => self.jump_prev_section(),
+            Message::ScrollViewport(delta) => self.scroll_viewport(delta),
 
             // ─────────────────────────────────────────────────────────────────
             // Selection actions
             // ─────────────────────────────────────────────────────────────────
             Message::ExpandSection => self.expand_current_section(),
             Message::CollapseSection => self.collapse_current_section(),
-            Message::OpenPrimaryLink => {
-                self.open_primary_link().await?;
-            }
+            Message::ToggleSectionFold => self.toggle_section_fold(),
             Message::OpenLinkMenu => self.open_link_menu(),
             Message::TeleportToSession => {
                 self.teleport_to_session().await?;
@@ -244,6 +244,8 @@ impl App {
                 self.state.search_query.pop();
                 self.update_search();
             }
+            Message::NextSearchMatch => self.next_search_match(),
+            Message::PrevSearchMatch => self.prev_search_match(),
 
             // ─────────────────────────────────────────────────────────────────
             // Modal toggles
@@ -289,6 +291,7 @@ impl App {
             // Link menu modal
             // ─────────────────────────────────────────────────────────────────
             Message::OpenLinksPopup => {
+                // Works from both normal mode and issue details - opens links popup directly
                 self.modal = ModalState::LinkMenu { show_links_popup: true };
             }
             Message::CloseLinksPopup => {
@@ -296,8 +299,11 @@ impl App {
             }
             Message::OpenLinearLink => {
                 self.open_linear_link().await?;
-                self.modal = ModalState::None;
-                self.clear_navigation();
+                // Only clear modal if we're in link menu
+                if self.show_link_menu() {
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
             }
             Message::OpenGithubLink => {
                 self.open_github_link().await?;
@@ -414,7 +420,9 @@ impl App {
         );
         let previous_status = self.selected_section();
 
-        self.visual_items = self.state.build_visual_items(&self.filtered_indices);
+        // In search mode with active query, preserve score order (no grouping)
+        let preserve_order = self.state.search_mode && !self.state.search_query.is_empty();
+        self.visual_items = self.state.build_visual_items(&self.filtered_indices, preserve_order);
 
         // Ensure selection is valid
         if self.visual_items.is_empty() {
@@ -532,6 +540,7 @@ impl App {
 
         let mut completed = false;
         let mut should_restore = true;
+        let mut items_added = 0usize;
 
         // Non-blocking receive of all available results
         while let Ok(result) = rx.try_recv() {
@@ -541,6 +550,7 @@ impl App {
                 }
                 RefreshResult::Workstream(ws) => {
                     self.state.workstreams.push(ws);
+                    items_added += 1;
                     if let Some(ref mut p) = self.refresh_progress {
                         p.completed += 1;
                     }
@@ -567,6 +577,12 @@ impl App {
             }
         }
 
+        // Rebuild visual items if new workstreams arrived (progressive display)
+        if items_added > 0 && !completed {
+            self.apply_filters();
+            self.rebuild_visual_items();
+        }
+
         // Restore receiver if not completed
         if should_restore {
             self.refresh_rx = Some(rx);
@@ -587,21 +603,21 @@ impl App {
             let issue = &ws.linear_issue;
 
             // ID column
-            max_id_len = max_id_len.max(issue.identifier.len());
+            max_id_len = max_id_len.max(issue.identifier.width());
 
             // Title column (cap at reasonable max to prevent single long title from dominating)
-            max_title_len = max_title_len.max(issue.title.chars().count().min(50));
+            max_title_len = max_title_len.max(issue.title.width().min(50));
 
             // PR column
             if let Some(pr) = &ws.github_pr {
                 let pr_text = format!("PR#{}", pr.number);
-                max_pr_len = max_pr_len.max(pr_text.len() + 2); // +2 for icon
+                max_pr_len = max_pr_len.max(pr_text.width() + 2); // +2 for icon
             }
 
             // Agent column
             if let Some(session) = &ws.agent_session {
                 let agent_text = session.status.label();
-                max_agent_len = max_agent_len.max(agent_text.len() + 2); // +2 for icon
+                max_agent_len = max_agent_len.max(agent_text.width() + 2); // +2 for icon
             }
         }
 
@@ -772,6 +788,109 @@ impl App {
 
     pub fn page_up(&mut self) {
         self.move_selection(-10);
+    }
+
+    /// Jump to next section header
+    pub fn jump_next_section(&mut self) {
+        let len = self.visual_items.len();
+        if len == 0 {
+            return;
+        }
+
+        // Find next section header after current position
+        for i in (self.visual_selected + 1)..len {
+            if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
+                self.visual_selected = i;
+                return;
+            }
+        }
+        // If no section found, go to end
+        self.visual_selected = len - 1;
+    }
+
+    /// Jump to previous section header
+    pub fn jump_prev_section(&mut self) {
+        if self.visual_items.is_empty() || self.visual_selected == 0 {
+            return;
+        }
+
+        // Find previous section header before current position
+        for i in (0..self.visual_selected).rev() {
+            if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
+                self.visual_selected = i;
+                return;
+            }
+        }
+        // If no section found, go to start
+        self.visual_selected = 0;
+    }
+
+    /// Scroll viewport by delta lines (vim Ctrl+e/y style)
+    /// Moves selection to keep relative position as viewport scrolls
+    pub fn scroll_viewport(&mut self, delta: i32) {
+        // In a TUI with auto-scroll-to-selection, scrolling viewport
+        // effectively means moving selection while the view follows
+        self.move_selection(delta);
+    }
+
+    /// Toggle fold of the section containing the current item
+    pub fn toggle_section_fold(&mut self) {
+        let status = match self.visual_items.get(self.visual_selected) {
+            Some(VisualItem::SectionHeader(status)) => Some(*status),
+            Some(VisualItem::Workstream(idx)) => {
+                self.state.workstreams.get(*idx).map(|ws| ws.linear_issue.status)
+            }
+            None => None,
+        };
+
+        if let Some(status) = status {
+            if self.state.collapsed_sections.contains(&status) {
+                self.state.collapsed_sections.remove(&status);
+            } else {
+                self.state.collapsed_sections.insert(status);
+            }
+            self.rebuild_visual_items();
+        }
+    }
+
+    /// Jump to next search match (n key)
+    pub fn next_search_match(&mut self) {
+        if self.state.search_query.is_empty() || self.visual_items.is_empty() {
+            return;
+        }
+
+        let len = self.visual_items.len();
+        // Search forward from current position, wrapping around
+        for offset in 1..=len {
+            let idx = (self.visual_selected + offset) % len;
+            if self.is_search_match(idx) {
+                self.visual_selected = idx;
+                return;
+            }
+        }
+    }
+
+    /// Jump to previous search match (N key)
+    pub fn prev_search_match(&mut self) {
+        if self.state.search_query.is_empty() || self.visual_items.is_empty() {
+            return;
+        }
+
+        let len = self.visual_items.len();
+        // Search backward from current position, wrapping around
+        for offset in 1..=len {
+            let idx = (self.visual_selected + len - offset) % len;
+            if self.is_search_match(idx) {
+                self.visual_selected = idx;
+                return;
+            }
+        }
+    }
+
+    /// Check if a visual item at index is a workstream (for n/N navigation)
+    /// During search mode, all displayed workstreams are matches since we filter to matches only
+    fn is_search_match(&self, idx: usize) -> bool {
+        matches!(self.visual_items.get(idx), Some(VisualItem::Workstream(_)))
     }
 
     /// Get the currently selected workstream

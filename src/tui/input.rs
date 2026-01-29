@@ -83,7 +83,7 @@ pub fn dispatch(app: &App, input: &mut InputState, key: KeyEvent) -> Message {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Handle keys in normal mode (main issue list).
-fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
+pub fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
     match key.code {
         KeyCode::Char('q') => Message::Quit,
         KeyCode::Char('j') | KeyCode::Down => Message::MoveDown,
@@ -93,20 +93,40 @@ fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
             input.set_pending(KeyCode::Char('g'));
             Message::None
         }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Message::PageDown,
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Message::PageUp,
+        // Section navigation
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Message::JumpNextSection
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Message::JumpPrevSection
+        }
+        // Viewport scrolling (vim Ctrl+e/y - scroll without moving cursor)
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Message::ScrollViewport(1)
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Message::ScrollViewport(-1)
+        }
+        // Search
         KeyCode::Char('/') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Message::EnterSearch { search_all: true }
         }
         KeyCode::Char('/') => Message::EnterSearch { search_all: false },
-        KeyCode::Enter => Message::OpenPrimaryLink,
-        KeyCode::Char('o') => Message::OpenLinkMenu,
+        // Search navigation (vim-style n/N for next/prev match)
+        KeyCode::Char('n') => Message::NextSearchMatch,
+        KeyCode::Char('N') => Message::PrevSearchMatch,
+        // Actions
+        KeyCode::Char('o') | KeyCode::Enter => Message::OpenLinkMenu, // Open issue details
+        KeyCode::Char('l') => Message::OpenLinksPopup,                // Open links popup directly
         KeyCode::Char('t') => Message::TeleportToSession,
         KeyCode::Char('p') => Message::TogglePreview,
         KeyCode::Char('r') => Message::Refresh,
         KeyCode::Char('?') => Message::ToggleHelp,
+        // Section folding
+        KeyCode::Char('z') => Message::ToggleSectionFold,
         KeyCode::Char('h') | KeyCode::Left => Message::CollapseSection,
-        KeyCode::Char('l') | KeyCode::Right => Message::ExpandSection,
+        KeyCode::Right => Message::ExpandSection,
+        // Menus
         KeyCode::Char('s') => Message::ToggleSortMenu,
         KeyCode::Char('f') => Message::ToggleFilterMenu,
         KeyCode::Char('R') => Message::ToggleResizeMode,
@@ -114,12 +134,17 @@ fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
     }
 }
 
-/// Handle keys in search mode.
-fn dispatch_search_mode(key: KeyEvent) -> Message {
+/// Handle keys in search mode (typing query).
+/// Only basic navigation and text input work here.
+pub fn dispatch_search_mode(key: KeyEvent) -> Message {
     match key.code {
         KeyCode::Esc => Message::ExitSearch,
         KeyCode::Enter => Message::ConfirmSearch,
         KeyCode::Backspace => Message::SearchBackspace,
+        // Basic navigation works during search
+        KeyCode::Down => Message::MoveDown,
+        KeyCode::Up => Message::MoveUp,
+        // All chars are search input (including j/k/n/N)
         KeyCode::Char(c) => Message::SearchInput(c),
         _ => Message::None,
     }
@@ -209,7 +234,8 @@ fn dispatch_filter_menu(key: KeyEvent) -> Message {
     }
 }
 
-/// Handle keys in link menu modal.
+/// Handle keys in link menu modal (issue details view).
+/// Keybindings are unified with normal mode where possible.
 fn dispatch_link_menu(app: &App, input: &mut InputState, key: KeyEvent) -> Message {
     // Handle links popup first (nested modal)
     if app.show_links_popup() {
@@ -221,9 +247,9 @@ fn dispatch_link_menu(app: &App, input: &mut InputState, key: KeyEvent) -> Messa
         return dispatch_modal_search(key);
     }
 
-    // Handle main link menu
+    // Handle main link menu (issue details)
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             // Clear search first if active, then navigate back, then close
             if !app.modal_search_query.is_empty() {
                 Message::ClearModalSearch
@@ -231,12 +257,17 @@ fn dispatch_link_menu(app: &App, input: &mut InputState, key: KeyEvent) -> Messa
                 Message::NavigateBack
             }
         }
+        // Search
         KeyCode::Char('/') => Message::EnterModalSearch,
-        KeyCode::Char('l') => Message::OpenLinksPopup,
+        // Navigation (same as normal mode)
         KeyCode::Char('j') | KeyCode::Down => Message::NextChildIssue,
         KeyCode::Char('k') | KeyCode::Up => Message::PrevChildIssue,
-        KeyCode::Enter => Message::NavigateToSelectedChild,
+        // Actions (unified with normal mode)
+        KeyCode::Char('o') | KeyCode::Enter => Message::NavigateToSelectedChild, // Enter into child
+        KeyCode::Char('l') => Message::OpenLinksPopup,                           // Open links
         KeyCode::Char('p') => Message::NavigateToParent,
+        KeyCode::Char('t') => Message::TeleportToSession,
+        // Chords for documents and children
         KeyCode::Char('d') => {
             // Start chord for d1-d9 or description
             input.set_pending(KeyCode::Char('d'));
@@ -313,116 +344,5 @@ fn handle_chord(app: &App, first: KeyCode, second: KeyCode) -> Message {
         }
 
         _ => Message::None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-
-    fn key_event(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::empty(),
-            kind: KeyEventKind::Press,
-            state: KeyEventState::empty(),
-        }
-    }
-
-    fn key_event_ctrl(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::CONTROL,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::empty(),
-        }
-    }
-
-    #[test]
-    fn test_normal_mode_quit() {
-        let mut input = InputState::new();
-        let msg = dispatch_normal_mode(&mut input, key_event(KeyCode::Char('q')));
-        assert_eq!(msg, Message::Quit);
-    }
-
-    #[test]
-    fn test_normal_mode_navigation() {
-        let mut input = InputState::new();
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('j'))),
-            Message::MoveDown
-        );
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('k'))),
-            Message::MoveUp
-        );
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('G'))),
-            Message::GotoBottom
-        );
-    }
-
-    #[test]
-    fn test_normal_mode_page_navigation() {
-        let mut input = InputState::new();
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event_ctrl(KeyCode::Char('d'))),
-            Message::PageDown
-        );
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event_ctrl(KeyCode::Char('u'))),
-            Message::PageUp
-        );
-    }
-
-    #[test]
-    fn test_normal_mode_search() {
-        let mut input = InputState::new();
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('/'))),
-            Message::EnterSearch { search_all: false }
-        );
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event_ctrl(KeyCode::Char('/'))),
-            Message::EnterSearch { search_all: true }
-        );
-    }
-
-    #[test]
-    fn test_chord_pending_state() {
-        let mut input = InputState::new();
-        let msg = dispatch_normal_mode(&mut input, key_event(KeyCode::Char('g')));
-        assert_eq!(msg, Message::None);
-        assert!(input.pending.is_some());
-        assert!(input.pending_since.is_some());
-    }
-
-    #[test]
-    fn test_search_mode() {
-        assert_eq!(
-            dispatch_search_mode(key_event(KeyCode::Esc)),
-            Message::ExitSearch
-        );
-        assert_eq!(
-            dispatch_search_mode(key_event(KeyCode::Enter)),
-            Message::ConfirmSearch
-        );
-        assert_eq!(
-            dispatch_search_mode(key_event(KeyCode::Char('a'))),
-            Message::SearchInput('a')
-        );
-        assert_eq!(
-            dispatch_search_mode(key_event(KeyCode::Backspace)),
-            Message::SearchBackspace
-        );
-    }
-
-    #[test]
-    fn test_input_state_timeout() {
-        let mut input = InputState::new();
-        input.set_pending(KeyCode::Char('g'));
-        assert!(!input.has_timed_out());
-        // Note: actual timeout test would need to wait 500ms
     }
 }
