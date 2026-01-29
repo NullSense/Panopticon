@@ -9,8 +9,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::app::{COL_IDX_STATUS, COL_IDX_PRIORITY, COL_IDX_ID, COL_IDX_TITLE, COL_IDX_PR, COL_IDX_AGENT, COL_IDX_VERCEL, COL_IDX_TIME};
+use super::app::{
+    COL_IDX_AGENT, COL_IDX_ID, COL_IDX_PR, COL_IDX_PRIORITY, COL_IDX_STATUS, COL_IDX_TIME,
+    COL_IDX_TITLE, COL_IDX_VERCEL, NUM_COLUMNS,
+};
 
 // Nerd Font icons
 mod icons {
@@ -78,6 +82,195 @@ mod icons {
     pub const ICON_DOCUMENT: &str = "󰈚";   // nf-md-file_document
     pub const ICON_PARENT: &str = "󰁝";     // nf-md-arrow_up_bold
     pub const ICON_CHILDREN: &str = "󰁅";   // nf-md-arrow_down_bold
+}
+
+const PREFIX: &str = "  ";
+const PREFIX_WIDTH: usize = 2;
+const SEP: &str = " │ ";
+const SEP_WIDTH: usize = 3;
+
+const COL_MIN_WIDTHS: [usize; NUM_COLUMNS] = [1, 3, 6, 12, 8, 8, 3, 6];
+const COL_HIDE_ORDER: [usize; 6] = [
+    COL_IDX_TIME,
+    COL_IDX_VERCEL,
+    COL_IDX_AGENT,
+    COL_IDX_PR,
+    COL_IDX_PRIORITY,
+    COL_IDX_ID,
+];
+
+#[derive(Clone, Copy)]
+struct ColumnLayout {
+    widths: [usize; NUM_COLUMNS],
+    visible: [bool; NUM_COLUMNS],
+    row_body_width: usize,
+}
+
+impl ColumnLayout {
+    fn is_visible(&self, idx: usize) -> bool {
+        self.visible[idx] && self.widths[idx] > 0
+    }
+}
+
+fn compute_column_layout(preferred: &[usize; NUM_COLUMNS], available_width: u16) -> ColumnLayout {
+    let available = available_width as usize;
+    if available <= PREFIX_WIDTH {
+        return ColumnLayout {
+            widths: [0; NUM_COLUMNS],
+            visible: [false; NUM_COLUMNS],
+            row_body_width: 0,
+        };
+    }
+
+    let mut visible = [true; NUM_COLUMNS];
+    let mut min_total = min_total_width(&visible);
+
+    for &idx in &COL_HIDE_ORDER {
+        if min_total <= available {
+            break;
+        }
+        if visible[idx] {
+            visible[idx] = false;
+            min_total = min_total_width(&visible);
+        }
+    }
+
+    let mut widths = [0; NUM_COLUMNS];
+    for i in 0..NUM_COLUMNS {
+        if visible[i] {
+            widths[i] = COL_MIN_WIDTHS[i];
+        }
+    }
+
+    if min_total > available {
+        let visible_count = visible.iter().filter(|v| **v).count();
+        let sep_total = visible_count.saturating_sub(1) * SEP_WIDTH;
+        let body_width = available.saturating_sub(PREFIX_WIDTH);
+        let other_total: usize = widths
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != COL_IDX_TITLE && visible[*idx])
+            .map(|(_, w)| *w)
+            .sum();
+        let title_width = body_width.saturating_sub(sep_total + other_total);
+        widths[COL_IDX_TITLE] = title_width;
+
+        let row_body_width = sep_total + other_total + title_width;
+        return ColumnLayout {
+            widths,
+            visible,
+            row_body_width,
+        };
+    }
+
+    let mut remaining = available.saturating_sub(min_total);
+    for &idx in &[COL_IDX_ID, COL_IDX_PR, COL_IDX_AGENT, COL_IDX_TITLE] {
+        if !visible[idx] {
+            continue;
+        }
+        let preferred_width = preferred[idx].max(COL_MIN_WIDTHS[idx]);
+        let cap = preferred_width.saturating_sub(widths[idx]);
+        let add = remaining.min(cap);
+        widths[idx] += add;
+        remaining -= add;
+    }
+    if remaining > 0 && visible[COL_IDX_TITLE] {
+        widths[COL_IDX_TITLE] += remaining;
+        remaining = 0;
+    }
+
+    let visible_count = visible.iter().filter(|v| **v).count();
+    let sep_total = visible_count.saturating_sub(1) * SEP_WIDTH;
+    let row_body_width: usize = widths
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| visible[*idx])
+        .map(|(_, w)| *w)
+        .sum::<usize>()
+        + sep_total;
+
+    ColumnLayout {
+        widths,
+        visible,
+        row_body_width,
+    }
+}
+
+fn min_total_width(visible: &[bool; NUM_COLUMNS]) -> usize {
+    let visible_count = visible.iter().filter(|v| **v).count();
+    if visible_count == 0 {
+        return 0;
+    }
+    let sep_total = visible_count.saturating_sub(1) * SEP_WIDTH;
+    let widths_total: usize = COL_MIN_WIDTHS
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| visible[*idx])
+        .map(|(_, w)| *w)
+        .sum();
+    PREFIX_WIDTH + sep_total + widths_total
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > max_width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out
+}
+
+fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if display_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let truncated = truncate_to_width(text, max_width.saturating_sub(1));
+    format!("{truncated}…")
+}
+
+fn pad_to_width(text: &str, width: usize, alignment: Alignment) -> String {
+    let mut trimmed = truncate_to_width(text, width);
+    let current = display_width(&trimmed);
+    let pad = width.saturating_sub(current);
+    match alignment {
+        Alignment::Left => {
+            trimmed.push_str(&" ".repeat(pad));
+            trimmed
+        }
+        Alignment::Right => format!("{}{}", " ".repeat(pad), trimmed),
+        Alignment::Center => {
+            let left = pad / 2;
+            let right = pad.saturating_sub(left);
+            format!("{}{}{}", " ".repeat(left), trimmed, " ".repeat(right))
+        }
+    }
+}
+
+fn header_label(icon: &str, label: &str) -> String {
+    match (icon.is_empty(), label.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => label.to_string(),
+        (false, true) => icon.to_string(),
+        (false, false) => format!("{icon} {label}"),
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -191,15 +384,7 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Get column widths from app
-    let col_status = app.column_widths[COL_IDX_STATUS];
-    let col_priority = app.column_widths[COL_IDX_PRIORITY];
-    let col_id = app.column_widths[COL_IDX_ID];
-    let col_title = app.column_widths[COL_IDX_TITLE];
-    let col_pr = app.column_widths[COL_IDX_PR];
-    let col_agent = app.column_widths[COL_IDX_AGENT];
-    let col_vercel = app.column_widths[COL_IDX_VERCEL];
-    let col_time = app.column_widths[COL_IDX_TIME];
+    let layout = compute_column_layout(&app.column_widths, inner.width);
 
     let mut items: Vec<ListItem> = Vec::new();
 
@@ -218,35 +403,77 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let header_line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(icons::HEADER_STATUS, col_style(COL_IDX_STATUS, header_style)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{:^width$}", "Pri", width = col_priority), col_style(COL_IDX_PRIORITY, header_style)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{} ", icons::HEADER_ID), col_style(COL_IDX_ID, header_style)),
-        Span::styled(format!("{:<width$}", "ID", width = col_id.saturating_sub(2)), col_style(COL_IDX_ID, header_dim)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{:<width$}", "Title", width = col_title), col_style(COL_IDX_TITLE, header_dim)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{} ", icons::HEADER_PR), col_style(COL_IDX_PR, header_style)),
-        Span::styled(format!("{:<width$}", "PR", width = col_pr.saturating_sub(2)), col_style(COL_IDX_PR, header_dim)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{} ", icons::HEADER_AGENT), col_style(COL_IDX_AGENT, header_style)),
-        Span::styled(format!("{:<width$}", "Agent", width = col_agent.saturating_sub(2)), col_style(COL_IDX_AGENT, header_dim)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{:^width$}", icons::HEADER_VERCEL, width = col_vercel), col_style(COL_IDX_VERCEL, header_style)),
-        Span::styled(" │ ", sep_style),
-        Span::styled(format!("{} ", icons::HEADER_TIME), col_style(COL_IDX_TIME, header_style)),
-        Span::styled(format!("{:>width$}", "Time", width = col_time.saturating_sub(2)), col_style(COL_IDX_TIME, header_dim)),
-    ]);
-    items.push(ListItem::new(header_line));
+    let mut header_spans: Vec<Span> = Vec::new();
+    header_spans.push(Span::raw(PREFIX));
+    let mut first_header = true;
+    let mut push_header = |idx: usize, text: String, align: Alignment, base: Style| {
+        if !layout.is_visible(idx) {
+            return;
+        }
+        if !first_header {
+            header_spans.push(Span::styled(SEP, sep_style));
+        } else {
+            first_header = false;
+        }
+        let padded = pad_to_width(&text, layout.widths[idx], align);
+        header_spans.push(Span::styled(padded, col_style(idx, base)));
+    };
+
+    push_header(
+        COL_IDX_STATUS,
+        header_label(icons::HEADER_STATUS, ""),
+        Alignment::Center,
+        header_style,
+    );
+    push_header(
+        COL_IDX_PRIORITY,
+        header_label("", "Pri"),
+        Alignment::Center,
+        header_style,
+    );
+    push_header(
+        COL_IDX_ID,
+        header_label(icons::HEADER_ID, "ID"),
+        Alignment::Left,
+        header_dim,
+    );
+    push_header(
+        COL_IDX_TITLE,
+        "Title".to_string(),
+        Alignment::Left,
+        header_dim,
+    );
+    push_header(
+        COL_IDX_PR,
+        header_label(icons::HEADER_PR, "PR"),
+        Alignment::Left,
+        header_dim,
+    );
+    push_header(
+        COL_IDX_AGENT,
+        header_label(icons::HEADER_AGENT, "Agent"),
+        Alignment::Left,
+        header_dim,
+    );
+    push_header(
+        COL_IDX_VERCEL,
+        header_label(icons::HEADER_VERCEL, ""),
+        Alignment::Center,
+        header_style,
+    );
+    push_header(
+        COL_IDX_TIME,
+        header_label(icons::HEADER_TIME, "Time"),
+        Alignment::Right,
+        header_dim,
+    );
+
+    items.push(ListItem::new(Line::from(header_spans)));
 
     // Separator line
-    let sep_width = col_status + col_priority + col_id + col_title + col_pr + col_agent + col_vercel + col_time + 24;
     let separator_line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled("─".repeat(sep_width), sep_style),
+        Span::raw(PREFIX),
+        Span::styled("─".repeat(layout.row_body_width), sep_style),
     ]);
     items.push(ListItem::new(separator_line));
 
@@ -289,7 +516,7 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         None
                     };
-                    let row = build_workstream_row(ws, is_selected, &app.column_widths, search_query);
+                    let row = build_workstream_row(ws, is_selected, &layout, search_query);
                     items.push(row);
 
                     // If there's a search excerpt for this item, show it expanded below
@@ -310,27 +537,38 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let list = List::new(items);
-    f.render_widget(list, inner);
+
+    // Use ListState for automatic scroll-to-selection
+    // Add 2 to account for header + separator lines
+    let mut list_state = ratatui::widgets::ListState::default()
+        .with_selected(Some(app.visual_selected + 2));
+
+    f.render_stateful_widget(list, inner, &mut list_state);
 }
 
-fn build_workstream_row(ws: &crate::data::Workstream, selected: bool, widths: &[usize; 8], search_query: Option<&str>) -> ListItem<'static> {
-    WorkstreamRowBuilder::new(ws, widths, search_query).build(selected)
+fn build_workstream_row(
+    ws: &crate::data::Workstream,
+    selected: bool,
+    layout: &ColumnLayout,
+    search_query: Option<&str>,
+) -> ListItem<'static> {
+    WorkstreamRowBuilder::new(ws, layout, search_query).build(selected)
 }
 
 /// Builder for workstream row UI elements
 /// Decomposes the row building into smaller, focused methods
 struct WorkstreamRowBuilder<'a> {
     ws: &'a crate::data::Workstream,
-    widths: &'a [usize; 8],
+    layout: &'a ColumnLayout,
     search_query: Option<&'a str>,
     sep_style: Style,
 }
 
 impl<'a> WorkstreamRowBuilder<'a> {
-    fn new(ws: &'a crate::data::Workstream, widths: &'a [usize; 8], search_query: Option<&'a str>) -> Self {
+    fn new(ws: &'a crate::data::Workstream, layout: &'a ColumnLayout, search_query: Option<&'a str>) -> Self {
         Self {
             ws,
-            widths,
+            layout,
             search_query,
             sep_style: Style::default().fg(Color::DarkGray),
         }
@@ -348,44 +586,55 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
     fn build_spans(&self) -> Vec<Span<'static>> {
         let (sub_prefix, sub_suffix) = self.sub_issue_indicators();
+        let mut spans = vec![Span::raw(PREFIX)];
+        let mut first = true;
 
-        let mut spans = vec![
-            Span::raw("  "),
-            self.status_span(),
-            self.separator(),
-            self.priority_span(),
-            self.separator(),
-        ];
-
-        // Add sub-issue tree prefix before ID
-        if !sub_prefix.is_empty() {
-            spans.push(Span::styled(sub_prefix, Style::default().fg(Color::DarkGray)));
+        if self.layout.is_visible(COL_IDX_STATUS) {
+            self.push_column(&mut spans, &mut first, vec![self.status_span(self.layout.widths[COL_IDX_STATUS])]);
         }
-        spans.extend(self.id_spans());
-        spans.push(self.separator());
-        spans.extend(self.title_spans(&sub_suffix));
-
-        // Add parent reference suffix after title for sub-issues
-        if !sub_suffix.is_empty() {
-            spans.push(Span::styled(sub_suffix, Style::default().fg(Color::DarkGray)));
+        if self.layout.is_visible(COL_IDX_PRIORITY) {
+            self.push_column(&mut spans, &mut first, vec![self.priority_span(self.layout.widths[COL_IDX_PRIORITY])]);
         }
-
-        spans.extend(vec![
-            self.separator(),
-            self.pr_span(),
-            self.separator(),
-            self.agent_span(),
-            self.separator(),
-            self.vercel_span(),
-            self.separator(),
-            self.elapsed_span(),
-        ]);
+        if self.layout.is_visible(COL_IDX_ID) {
+            self.push_column(
+                &mut spans,
+                &mut first,
+                self.id_spans(self.layout.widths[COL_IDX_ID], &sub_prefix),
+            );
+        }
+        if self.layout.is_visible(COL_IDX_TITLE) {
+            self.push_column(
+                &mut spans,
+                &mut first,
+                self.title_spans(self.layout.widths[COL_IDX_TITLE], &sub_suffix),
+            );
+        }
+        if self.layout.is_visible(COL_IDX_PR) {
+            self.push_column(&mut spans, &mut first, vec![self.pr_span(self.layout.widths[COL_IDX_PR])]);
+        }
+        if self.layout.is_visible(COL_IDX_AGENT) {
+            self.push_column(&mut spans, &mut first, vec![self.agent_span(self.layout.widths[COL_IDX_AGENT])]);
+        }
+        if self.layout.is_visible(COL_IDX_VERCEL) {
+            self.push_column(&mut spans, &mut first, vec![self.vercel_span(self.layout.widths[COL_IDX_VERCEL])]);
+        }
+        if self.layout.is_visible(COL_IDX_TIME) {
+            self.push_column(&mut spans, &mut first, vec![self.elapsed_span(self.layout.widths[COL_IDX_TIME])]);
+        }
 
         spans
     }
 
-    fn separator(&self) -> Span<'static> {
-        Span::styled(" │ ", self.sep_style)
+    fn push_column(&self, spans: &mut Vec<Span<'static>>, first: &mut bool, column_spans: Vec<Span<'static>>) {
+        if column_spans.is_empty() {
+            return;
+        }
+        if !*first {
+            spans.push(Span::styled(SEP, self.sep_style));
+        } else {
+            *first = false;
+        }
+        spans.extend(column_spans);
     }
 
     fn sub_issue_indicators(&self) -> (String, String) {
@@ -396,84 +645,104 @@ impl<'a> WorkstreamRowBuilder<'a> {
         }
     }
 
-    fn status_span(&self) -> Span<'static> {
+    fn status_span(&self, width: usize) -> Span<'static> {
         let cfg = linear_status_config(self.ws.linear_issue.status);
-        Span::styled(cfg.icon.to_string(), cfg.style)
+        let text = pad_to_width(cfg.icon, width, Alignment::Center);
+        Span::styled(text, cfg.style)
     }
 
-    fn priority_span(&self) -> Span<'static> {
+    fn priority_span(&self, width: usize) -> Span<'static> {
         let cfg = priority_config(self.ws.linear_issue.priority);
-        Span::styled(format!("{:^width$}", cfg.icon, width = self.widths[COL_IDX_PRIORITY]), cfg.style)
+        let text = pad_to_width(cfg.icon, width, Alignment::Center);
+        Span::styled(text, cfg.style)
     }
 
-    fn id_spans(&self) -> Vec<Span<'static>> {
+    fn id_spans(&self, width: usize, sub_prefix: &str) -> Vec<Span<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
         let issue = &self.ws.linear_issue;
-        let is_sub_issue = issue.parent.is_some();
-        let id_width = if is_sub_issue {
-            self.widths[COL_IDX_ID].saturating_sub(4) // Account for "└ " prefix
-        } else {
-            self.widths[COL_IDX_ID].saturating_sub(2)
-        };
-        let id_text = format!("{:<width$}", issue.identifier, width = id_width);
-        highlight_search_matches(&id_text, self.search_query, linear_status_config(issue.status).style)
+        let prefix_width = display_width(sub_prefix);
+        let content_width = width.saturating_sub(prefix_width);
+        let id_text = pad_to_width(&issue.identifier, content_width, Alignment::Left);
+        let mut spans = Vec::new();
+        if !sub_prefix.is_empty() {
+            spans.push(Span::styled(sub_prefix.to_string(), Style::default().fg(Color::DarkGray)));
+        }
+        spans.extend(highlight_search_matches(
+            &id_text,
+            self.search_query,
+            linear_status_config(issue.status).style,
+        ));
+        spans
     }
 
-    fn title_spans(&self, sub_suffix: &str) -> Vec<Span<'static>> {
+    fn title_spans(&self, width: usize, sub_suffix: &str) -> Vec<Span<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
         let issue = &self.ws.linear_issue;
-        let is_sub_issue = issue.parent.is_some();
-        let title_max = if is_sub_issue {
-            self.widths[COL_IDX_TITLE].saturating_sub(sub_suffix.chars().count())
+        let suffix_width = display_width(sub_suffix);
+        let mut suffix = sub_suffix.to_string();
+        let title_width = if suffix_width + 1 > width {
+            suffix.clear();
+            width
         } else {
-            self.widths[COL_IDX_TITLE]
+            width.saturating_sub(suffix_width)
         };
 
-        let title = if issue.title.chars().count() > title_max {
-            let truncated: String = issue.title.chars().take(title_max.saturating_sub(1)).collect();
-            format!("{}…", truncated)
-        } else {
-            format!("{:<width$}", issue.title, width = title_max)
-        };
-        highlight_search_matches(&title, self.search_query, Style::default())
+        let title = truncate_with_ellipsis(&issue.title, title_width);
+        let title = pad_to_width(&title, title_width, Alignment::Left);
+        let mut spans = highlight_search_matches(&title, self.search_query, Style::default());
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, Style::default().fg(Color::DarkGray)));
+        }
+        spans
     }
 
-    fn pr_span(&self) -> Span<'static> {
-        let col_pr = self.widths[COL_IDX_PR];
+    fn pr_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(pr) = &self.ws.github_pr {
             let cfg = pr_status_config(pr.status);
             let text = format!("{} PR#{:<5}", cfg.icon, pr.number);
-            (format!("{:<width$}", text, width = col_pr.saturating_sub(2)), cfg.style)
+            (pad_to_width(&text, width, Alignment::Left), cfg.style)
         } else {
-            (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_pr.saturating_sub(2)), Style::default().fg(Color::DarkGray))
+            (
+                pad_to_width(&format!("{} --", icons::AGENT_NONE), width, Alignment::Left),
+                Style::default().fg(Color::DarkGray),
+            )
         };
         Span::styled(text, style)
     }
 
-    fn agent_span(&self) -> Span<'static> {
-        let col_agent = self.widths[COL_IDX_AGENT];
+    fn agent_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(session) = &self.ws.agent_session {
             let cfg = agent_status_config(session.status);
             let label = session.status.label();
             let text = format!("{} {:<5}", cfg.icon, label);
-            (format!("{:<width$}", text, width = col_agent.saturating_sub(2)), cfg.style)
+            (pad_to_width(&text, width, Alignment::Left), cfg.style)
         } else {
-            (format!("{:<width$}", format!("{} --", icons::AGENT_NONE), width = col_agent.saturating_sub(2)), Style::default().fg(Color::DarkGray))
+            (
+                pad_to_width(&format!("{} --", icons::AGENT_NONE), width, Alignment::Left),
+                Style::default().fg(Color::DarkGray),
+            )
         };
         Span::styled(text, style)
     }
 
-    fn vercel_span(&self) -> Span<'static> {
-        let col_vercel = self.widths[COL_IDX_VERCEL];
+    fn vercel_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(deploy) = &self.ws.vercel_deployment {
             let cfg = vercel_status_config(deploy.status);
-            (format!("{:^width$}", cfg.icon, width = col_vercel), cfg.style)
+            (pad_to_width(cfg.icon, width, Alignment::Center), cfg.style)
         } else {
-            (format!("{:^width$}", icons::VERCEL_NONE, width = col_vercel), Style::default().fg(Color::DarkGray))
+            (
+                pad_to_width(icons::VERCEL_NONE, width, Alignment::Center),
+                Style::default().fg(Color::DarkGray),
+            )
         };
         Span::styled(text, style)
     }
 
-    fn elapsed_span(&self) -> Span<'static> {
-        let col_time = self.widths[COL_IDX_TIME];
+    fn elapsed_span(&self, width: usize) -> Span<'static> {
         let elapsed = if let Some(session) = &self.ws.agent_session {
             let duration = chrono::Utc::now().signed_duration_since(session.started_at);
             if session.status == AgentStatus::Done {
@@ -491,7 +760,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
             "".to_string()
         };
         Span::styled(
-            format!("{:>width$}", elapsed, width = col_time.saturating_sub(2)),
+            pad_to_width(&elapsed, width, Alignment::Right),
             Style::default().fg(Color::DarkGray),
         )
     }
@@ -805,25 +1074,25 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         };
         Span::styled(text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
     } else if app.state.search_mode {
-        let text = if width >= 50 {
-            " Type to search | Enter: select | Esc: cancel "
-        } else if width >= 30 {
-            " Search | Enter | Esc "
+        let text = if width >= 60 {
+            " Type to search | ↑/↓: nav | n/N: next/prev match | Enter: confirm | Esc: exit "
+        } else if width >= 40 {
+            " ↑/↓:nav n/N:match Enter Esc "
         } else {
             " Search "
         };
         Span::styled(text, Style::default().fg(Color::Yellow))
     } else {
         // Responsive shortcuts based on available width
-        let text = if width >= 90 {
+        let text = if width >= 110 {
             let sort_indicator = format!("[{}]", app.state.sort_mode.label());
-            format!(" j/k: nav | /: search | o: links | f: filter | s: sort {} | R: resize | ?: help ", sort_indicator)
-        } else if width >= 70 {
-            " j/k: nav | /: search | o: links | f: filter | s: sort | ?: help ".to_string()
-        } else if width >= 50 {
-            " j/k /search o:links f:filter s:sort ?:help ".to_string()
-        } else if width >= 30 {
-            " j/k / o f s ? ".to_string()
+            format!(" j/k: nav | o/Enter: details | l: links | z: fold | /: search | f: filter | s: sort {} | ?: help ", sort_indicator)
+        } else if width >= 90 {
+            " j/k: nav | o: details | l: links | z: fold | /: search | f: filter | ?: help ".to_string()
+        } else if width >= 65 {
+            " j/k:nav o:details l:links z:fold /:search f:filter ?:help ".to_string()
+        } else if width >= 40 {
+            " j/k o l z / f s ? ".to_string()
         } else {
             " ? help ".to_string()
         };
@@ -861,22 +1130,29 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
             "  j/k, ↑/↓     Move up/down",
             "  gg           Go to top",
             "  G            Go to bottom",
-            "  Ctrl+d/u     Page down/up",
-            "  h/l, ←/→     Collapse/expand section",
+            "  Ctrl+d/u     Jump to next/prev section",
+            "  Ctrl+e/y     Scroll viewport (vim-style)",
+            "  h/←          Collapse section",
+            "  →            Expand section",
+            "  z            Toggle fold on current section",
             "",
             "  Search",
             "  ──────",
             "  /            Search active work",
             "  Ctrl+/       Search all Linear issues",
+            "  n            Next search match",
+            "  N            Previous search match",
             "  Enter        Confirm search",
-            "  Esc          Cancel search",
+            "  Esc          Exit search mode",
             "",
             "  Actions",
             "  ───────",
-            "  Enter        Open Linear issue",
-            "  o            Link menu (1-4 to select)",
+            "  o, Enter     Open issue details",
+            "  l            Open links popup (Linear/GitHub/...)",
             "  t            Teleport to Claude session",
+            "  p            Toggle preview panel",
             "  s            Open sort menu",
+            "  f            Open filter menu",
             "  r            Refresh data",
             "",
             "  q            Quit",
