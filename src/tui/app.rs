@@ -5,6 +5,7 @@ use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Braille spinner frames for loading animation
@@ -54,102 +55,433 @@ pub const COLUMN_NAMES: [&str; NUM_COLUMNS] = [
     "Status", "Priority", "ID", "Title", "PR", "Agent", "Vercel", "Time"
 ];
 
+/// Active modal state - only one modal can be active at a time
+/// This enum consolidates the previous 7 boolean modal flags
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ModalState {
+    #[default]
+    None,
+    Help { tab: usize },
+    LinkMenu { show_links_popup: bool },
+    SortMenu,
+    FilterMenu,
+    Description,
+    Resize,
+    SpawnAgent {
+        directory_input: String,
+        recent_directories: Vec<String>,
+        selected_dir_idx: Option<usize>,
+        error: Option<String>,
+    },
+}
+
+impl ModalState {
+    pub fn is_none(&self) -> bool {
+        matches!(self, ModalState::None)
+    }
+}
+
 pub struct App {
-    pub config: Config,
+    pub config: Arc<Config>,
     pub state: AppState,
     pub filtered_indices: Vec<usize>,
     pub visual_items: Vec<VisualItem>,
     pub visual_selected: usize,
-    pub show_help: bool,
-    pub help_tab: usize, // 0 = shortcuts, 1 = status legend
-    pub show_link_menu: bool,
-    /// Quick links popup within issue details
-    pub show_links_popup: bool,
-    pub show_sort_menu: bool,
+
+    // Modal state - single enum replacing 7 booleans
+    pub modal: ModalState,
+
+    // UI state
     pub show_preview: bool,
-    pub search_all: bool,
     pub error_message: Option<String>,
     pub is_loading: bool,
     pub spinner_frame: usize,
-    /// Search excerpts for workstreams that matched in description
-    pub search_excerpts: HashMap<usize, SearchMatch>,
-    /// Resize mode active
-    pub resize_mode: bool,
-    /// Currently selected column in resize mode
-    pub resize_column_idx: usize,
-    /// Column widths (Status, Priority, ID, Title, PR, Agent, Vercel, Time)
     pub column_widths: [usize; NUM_COLUMNS],
-    /// Filter menu visible
-    pub show_filter_menu: bool,
-    /// Filter by cycle IDs (empty = show all)
+    pub resize_column_idx: usize,
+
+    // Search state
+    pub search_all: bool,
+    pub search_excerpts: HashMap<usize, SearchMatch>,
+
+    // Filter state
     pub filter_cycles: HashSet<String>,
-    /// Filter by priorities (empty = show all)
     pub filter_priorities: HashSet<LinearPriority>,
-    /// Available cycles (populated from workstreams)
     pub available_cycles: Vec<LinearCycle>,
-    /// Show full description modal
-    pub show_description_modal: bool,
-    /// Description scroll position (line offset)
-    pub description_scroll: usize,
-    /// Show sub-issues (issues with a parent) - default true
     pub show_sub_issues: bool,
-    /// Selected child/sub-issue index in link menu (for j/k navigation)
+
+    // Modal navigation state
     pub selected_child_idx: Option<usize>,
-    /// Navigation stack for in-modal issue navigation (stores issue IDs for back navigation)
     pub issue_navigation_stack: Vec<String>,
-    /// Currently viewed issue ID in modal (if different from selected workstream)
     pub modal_issue_id: Option<String>,
-    /// Scroll offset for sub-issues list in modal
     pub sub_issues_scroll: usize,
-    /// Modal search mode active
+    pub description_scroll: usize,
     pub modal_search_mode: bool,
-    /// Modal search query
     pub modal_search_query: String,
+
     /// Channel receiver for background refresh results
     pub refresh_rx: Option<mpsc::Receiver<RefreshResult>>,
     /// Progress tracking for incremental updates
     pub refresh_progress: Option<RefreshProgress>,
 }
 
+// Modal state accessors (backward-compatible interface)
+impl App {
+    pub fn show_help(&self) -> bool {
+        matches!(self.modal, ModalState::Help { .. })
+    }
+
+    pub fn help_tab(&self) -> usize {
+        match self.modal {
+            ModalState::Help { tab } => tab,
+            _ => 0,
+        }
+    }
+
+    pub fn show_link_menu(&self) -> bool {
+        matches!(self.modal, ModalState::LinkMenu { .. })
+    }
+
+    pub fn show_links_popup(&self) -> bool {
+        matches!(self.modal, ModalState::LinkMenu { show_links_popup: true })
+    }
+
+    pub fn show_sort_menu(&self) -> bool {
+        matches!(self.modal, ModalState::SortMenu)
+    }
+
+    pub fn show_filter_menu(&self) -> bool {
+        matches!(self.modal, ModalState::FilterMenu)
+    }
+
+    pub fn show_description_modal(&self) -> bool {
+        matches!(self.modal, ModalState::Description)
+    }
+
+    pub fn resize_mode(&self) -> bool {
+        matches!(self.modal, ModalState::Resize)
+    }
+
+    pub fn show_spawn_modal(&self) -> bool {
+        matches!(self.modal, ModalState::SpawnAgent { .. })
+    }
+
+    pub fn spawn_modal_state(&self) -> Option<(&str, &[String], Option<usize>, Option<&str>)> {
+        match &self.modal {
+            ModalState::SpawnAgent {
+                directory_input,
+                recent_directories,
+                selected_dir_idx,
+                error,
+            } => Some((
+                directory_input.as_str(),
+                recent_directories.as_slice(),
+                *selected_dir_idx,
+                error.as_deref(),
+            )),
+            _ => None,
+        }
+    }
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
         Self {
-            config,
+            config: Arc::new(config),
             state: AppState::default(),
             filtered_indices: vec![],
             visual_items: vec![],
             visual_selected: 0,
-            show_help: false,
-            help_tab: 0,
-            show_link_menu: false,
-            show_links_popup: false,
-            show_sort_menu: false,
+            modal: ModalState::None,
             show_preview: false,
-            search_all: false,
             error_message: None,
             is_loading: false,
             spinner_frame: 0,
-            search_excerpts: HashMap::new(),
-            resize_mode: false,
-            resize_column_idx: COL_IDX_TITLE, // Start with title column selected
             // Default widths: Status=1, Priority=3, ID=10, Title=26, PR=12, Agent=10, Vercel=3, Time=6
             column_widths: [1, 3, 10, 26, 12, 10, 3, 6],
-            show_filter_menu: false,
+            resize_column_idx: COL_IDX_TITLE,
+            search_all: false,
+            search_excerpts: HashMap::new(),
             filter_cycles: HashSet::new(),
             filter_priorities: HashSet::new(),
             available_cycles: Vec::new(),
-            show_description_modal: false,
-            description_scroll: 0,
-            show_sub_issues: true, // Default: show all issues including sub-issues
+            show_sub_issues: true,
             selected_child_idx: None,
             issue_navigation_stack: Vec::new(),
             modal_issue_id: None,
             sub_issues_scroll: 0,
+            description_scroll: 0,
             modal_search_mode: false,
             modal_search_query: String::new(),
             refresh_rx: None,
             refresh_progress: None,
         }
+    }
+
+    /// Process a message and update app state (Elm Architecture update function).
+    ///
+    /// Returns `Ok(true)` if the app should quit, `Ok(false)` to continue.
+    pub async fn update(&mut self, msg: super::Message) -> anyhow::Result<bool> {
+        use super::Message;
+        match msg {
+            // ─────────────────────────────────────────────────────────────────
+            // App lifecycle
+            // ─────────────────────────────────────────────────────────────────
+            Message::Quit => return Ok(true),
+            Message::Refresh => self.start_background_refresh(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Navigation
+            // ─────────────────────────────────────────────────────────────────
+            Message::MoveUp => self.move_selection(-1),
+            Message::MoveDown => self.move_selection(1),
+            Message::GotoTop => self.go_to_top(),
+            Message::GotoBottom => self.go_to_bottom(),
+            Message::PageUp => self.page_up(),
+            Message::PageDown => self.page_down(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Selection actions
+            // ─────────────────────────────────────────────────────────────────
+            Message::ExpandSection => self.expand_current_section(),
+            Message::CollapseSection => self.collapse_current_section(),
+            Message::OpenPrimaryLink => {
+                self.open_primary_link().await?;
+            }
+            Message::OpenLinkMenu => self.open_link_menu(),
+            Message::TeleportToSession => {
+                self.teleport_to_session().await?;
+                // Close modal and clear navigation if in link menu
+                if self.show_link_menu() {
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Search mode
+            // ─────────────────────────────────────────────────────────────────
+            Message::EnterSearch { search_all } => self.enter_search(search_all),
+            Message::ExitSearch => self.exit_search(),
+            Message::ConfirmSearch => self.confirm_search(),
+            Message::SearchInput(c) => {
+                self.state.search_query.push(c);
+                self.update_search();
+            }
+            Message::SearchBackspace => {
+                self.state.search_query.pop();
+                self.update_search();
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Modal toggles
+            // ─────────────────────────────────────────────────────────────────
+            Message::ToggleHelp => self.toggle_help(),
+            Message::ToggleSortMenu => self.toggle_sort_menu(),
+            Message::ToggleFilterMenu => self.toggle_filter_menu(),
+            Message::TogglePreview => self.toggle_preview(),
+            Message::ToggleResizeMode => self.toggle_resize_mode(),
+            Message::CloseModal => self.modal = ModalState::None,
+
+            // ─────────────────────────────────────────────────────────────────
+            // Help modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::SetHelpTab(tab) => {
+                self.modal = ModalState::Help { tab };
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Sort modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::SetSortMode(mode) => self.set_sort_mode(mode),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Filter modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::ToggleCycleFilter(idx) => self.toggle_cycle_filter(idx),
+            Message::TogglePriorityFilter(priority) => self.toggle_priority_filter(priority),
+            Message::ToggleSubIssues => self.toggle_sub_issues(),
+            Message::ClearAllFilters => self.clear_all_filters(),
+            Message::SelectAllFilters => self.select_all_filters(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Resize mode
+            // ─────────────────────────────────────────────────────────────────
+            Message::ExitResizeMode => self.exit_resize_mode(),
+            Message::ResizeColumnNarrower => self.resize_column_narrower(),
+            Message::ResizeColumnWider => self.resize_column_wider(),
+            Message::ResizeNextColumn => self.resize_next_column(),
+            Message::ResizePrevColumn => self.resize_prev_column(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Link menu modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::OpenLinksPopup => {
+                self.modal = ModalState::LinkMenu { show_links_popup: true };
+            }
+            Message::CloseLinksPopup => {
+                self.modal = ModalState::LinkMenu { show_links_popup: false };
+            }
+            Message::OpenLinearLink => {
+                self.open_linear_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenGithubLink => {
+                self.open_github_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenVercelLink => {
+                self.open_vercel_link().await?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Link menu navigation
+            // ─────────────────────────────────────────────────────────────────
+            Message::NextChildIssue => self.next_child_issue(),
+            Message::PrevChildIssue => self.prev_child_issue(),
+            Message::NavigateToSelectedChild => {
+                if self.selected_child_idx.is_some() {
+                    if !self.navigate_to_selected_child() {
+                        // Child not in workstreams, open in browser
+                        self.open_selected_child_issue()?;
+                        self.modal = ModalState::None;
+                        self.clear_navigation();
+                    }
+                }
+            }
+            Message::NavigateToParent => {
+                if !self.navigate_to_parent() {
+                    // Parent not in workstreams, open in browser
+                    self.open_parent_issue()?;
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+            Message::OpenDocument(idx) => {
+                self.open_document(idx)?;
+                self.modal = ModalState::None;
+                self.clear_navigation();
+            }
+            Message::OpenDescriptionModal => self.open_description_modal(),
+            Message::NavigateToChild(idx) => {
+                if !self.navigate_to_child(idx) {
+                    // Child not in workstreams, open in browser
+                    self.open_child_issue(idx)?;
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Description modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::ScrollDescription(delta) => {
+                if delta == -10000 {
+                    // Special value for "go to top"
+                    self.description_scroll = 0;
+                } else {
+                    self.scroll_description(delta);
+                }
+            }
+            Message::CloseDescriptionModal => self.close_description_modal(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Modal search
+            // ─────────────────────────────────────────────────────────────────
+            Message::EnterModalSearch => self.enter_modal_search(),
+            Message::ExitModalSearch => self.exit_modal_search(),
+            Message::ModalSearchInput(c) => {
+                self.modal_search_query.push(c);
+            }
+            Message::ModalSearchBackspace => {
+                self.modal_search_query.pop();
+            }
+            Message::ClearModalSearch => self.clear_modal_search(),
+
+            // ─────────────────────────────────────────────────────────────────
+            // Navigation stack
+            // ─────────────────────────────────────────────────────────────────
+            Message::NavigateBack => {
+                if !self.navigate_back() {
+                    // Stack empty, close the menu
+                    self.modal = ModalState::None;
+                    self.clear_navigation();
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Spawn agent modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::OpenSpawnAgentModal => self.open_spawn_modal(),
+            Message::CloseSpawnAgentModal => {
+                self.modal = ModalState::None;
+            }
+            Message::SpawnDirectoryInput(c) => {
+                if let ModalState::SpawnAgent { directory_input, selected_dir_idx, error, .. } = &mut self.modal {
+                    directory_input.push(c);
+                    *selected_dir_idx = None; // Clear selection when typing
+                    *error = None; // Clear error when typing
+                }
+            }
+            Message::SpawnDirectoryBackspace => {
+                if let ModalState::SpawnAgent { directory_input, error, .. } = &mut self.modal {
+                    directory_input.pop();
+                    *error = None;
+                }
+            }
+            Message::SpawnDirSelectUp => {
+                if let ModalState::SpawnAgent { recent_directories, selected_dir_idx, directory_input, .. } = &mut self.modal {
+                    if !recent_directories.is_empty() {
+                        *selected_dir_idx = Some(match *selected_dir_idx {
+                            None => 0,
+                            Some(0) => 0,
+                            Some(idx) => idx - 1,
+                        });
+                        if let Some(idx) = *selected_dir_idx {
+                            if let Some(dir) = recent_directories.get(idx) {
+                                *directory_input = dir.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            Message::SpawnDirSelectDown => {
+                if let ModalState::SpawnAgent { recent_directories, selected_dir_idx, directory_input, .. } = &mut self.modal {
+                    if !recent_directories.is_empty() {
+                        let max_idx = recent_directories.len() - 1;
+                        *selected_dir_idx = Some(match *selected_dir_idx {
+                            None => 0,
+                            Some(idx) if idx >= max_idx => max_idx,
+                            Some(idx) => idx + 1,
+                        });
+                        if let Some(idx) = *selected_dir_idx {
+                            if let Some(dir) = recent_directories.get(idx) {
+                                *directory_input = dir.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            Message::ClearSpawnDirectoryInput => {
+                if let ModalState::SpawnAgent { directory_input, selected_dir_idx, error, .. } = &mut self.modal {
+                    directory_input.clear();
+                    *selected_dir_idx = None;
+                    *error = None;
+                }
+            }
+            Message::ConfirmSpawnAgent => {
+                self.spawn_agent().await?;
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // No-op
+            // ─────────────────────────────────────────────────────────────────
+            Message::None => {}
+        }
+        Ok(false)
     }
 
     /// Advance spinner frame (call on tick while loading)
@@ -272,7 +604,7 @@ impl App {
         let (tx, rx) = mpsc::channel(100);
         self.refresh_rx = Some(rx);
 
-        let config = self.config.clone();
+        let config = Arc::clone(&self.config);
 
         // Spawn background task
         tokio::spawn(async move {
@@ -496,23 +828,17 @@ impl App {
         let steps = delta.unsigned_abs() as usize;
 
         for _ in 0..steps {
-            // Move in the direction
-            loop {
-                if delta > 0 {
-                    if pos >= len - 1 {
-                        break; // At end
-                    }
-                    pos += 1;
-                } else {
-                    if pos == 0 {
-                        break; // At start
-                    }
-                    pos -= 1;
+            // Move in the direction (stop on any item - workstream or section header)
+            if delta > 0 {
+                if pos >= len - 1 {
+                    break; // At end
                 }
-
-                // Stop on any item (workstream or section header)
-                // This allows navigating to collapsed sections to expand them
-                break;
+                pos += 1;
+            } else {
+                if pos == 0 {
+                    break; // At start
+                }
+                pos -= 1;
             }
         }
 
@@ -685,9 +1011,11 @@ impl App {
     }
 
     pub fn open_link_menu(&mut self) {
-        self.show_link_menu = !self.show_link_menu;
-        if !self.show_link_menu {
+        if self.show_link_menu() {
+            self.modal = ModalState::None;
             self.clear_navigation();
+        } else {
+            self.modal = ModalState::LinkMenu { show_links_popup: false };
         }
     }
 
@@ -840,22 +1168,25 @@ impl App {
     }
 
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        if self.show_help() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::Help { tab: 0 };
+        }
     }
 
     // Description modal
     pub fn open_description_modal(&mut self) {
         if let Some(ws) = self.modal_issue() {
             if ws.linear_issue.description.is_some() {
-                self.show_description_modal = true;
+                self.modal = ModalState::Description;
                 self.description_scroll = 0;
-                self.show_link_menu = false;
             }
         }
     }
 
     pub fn close_description_modal(&mut self) {
-        self.show_description_modal = false;
+        self.modal = ModalState::None;
         self.description_scroll = 0;
     }
 
@@ -881,22 +1212,30 @@ impl App {
 
     // Sorting
     pub fn toggle_sort_menu(&mut self) {
-        self.show_sort_menu = !self.show_sort_menu;
+        if self.show_sort_menu() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::SortMenu;
+        }
     }
 
     pub fn set_sort_mode(&mut self, mode: crate::data::SortMode) {
         self.state.sort_mode = mode;
-        self.show_sort_menu = false;
+        self.modal = ModalState::None;
         self.rebuild_visual_items();
     }
 
     // Resize mode
     pub fn toggle_resize_mode(&mut self) {
-        self.resize_mode = !self.resize_mode;
+        if self.resize_mode() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::Resize;
+        }
     }
 
     pub fn exit_resize_mode(&mut self) {
-        self.resize_mode = false;
+        self.modal = ModalState::None;
     }
 
     pub fn resize_next_column(&mut self) {
@@ -927,7 +1266,11 @@ impl App {
 
     // Filter methods
     pub fn toggle_filter_menu(&mut self) {
-        self.show_filter_menu = !self.show_filter_menu;
+        if self.show_filter_menu() {
+            self.modal = ModalState::None;
+        } else {
+            self.modal = ModalState::FilterMenu;
+        }
     }
 
     pub fn toggle_cycle_filter(&mut self, cycle_idx: usize) {
@@ -1024,6 +1367,121 @@ impl App {
     #[allow(dead_code)]
     pub fn has_active_filters(&self) -> bool {
         !self.filter_cycles.is_empty() || !self.filter_priorities.is_empty()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Spawn agent modal
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Open the spawn agent modal
+    pub fn open_spawn_modal(&mut self) {
+        // Only open if we have a selected workstream
+        if self.selected_workstream().is_none() {
+            return;
+        }
+
+        // Get recent directories from state
+        let recent_directories = integrations::claude::state::get_recent_directories()
+            .unwrap_or_default();
+
+        self.modal = ModalState::SpawnAgent {
+            directory_input: String::new(),
+            recent_directories,
+            selected_dir_idx: None,
+            error: None,
+        };
+    }
+
+    /// Spawn a Claude agent in a tmux session for the selected issue
+    pub async fn spawn_agent(&mut self) -> Result<()> {
+        // Get the directory input and issue info
+        let (directory, identifier, title, description) = {
+            let ws = match self.selected_workstream() {
+                Some(ws) => ws,
+                None => {
+                    if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                        *error = Some("No issue selected".to_string());
+                    }
+                    return Ok(());
+                }
+            };
+
+            let dir = match &self.modal {
+                ModalState::SpawnAgent { directory_input, .. } => directory_input.clone(),
+                _ => return Ok(()),
+            };
+
+            (
+                dir,
+                ws.linear_issue.identifier.clone(),
+                ws.linear_issue.title.clone(),
+                ws.linear_issue.description.clone(),
+            )
+        };
+
+        // Validate directory
+        if directory.is_empty() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some("Directory cannot be empty".to_string());
+            }
+            return Ok(());
+        }
+
+        // Expand ~ to home directory
+        let expanded_dir = if directory.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&directory[2..]).to_string_lossy().to_string()
+            } else {
+                directory.clone()
+            }
+        } else {
+            directory.clone()
+        };
+
+        // Check if directory exists
+        if !std::path::Path::new(&expanded_dir).is_dir() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some(format!("Directory does not exist: {}", expanded_dir));
+            }
+            return Ok(());
+        }
+
+        // Check tmux availability
+        if !integrations::claude::tmux_available() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some("tmux is not installed or not available".to_string());
+            }
+            return Ok(());
+        }
+
+        // Check if session already exists
+        if integrations::claude::tmux_session_exists(&identifier) {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some(format!("Session '{}' already exists. Press 't' to teleport.", identifier));
+            }
+            return Ok(());
+        }
+
+        // Spawn the agent session
+        match integrations::claude::spawn_agent_session(&identifier, &title, description.as_deref(), &expanded_dir).await {
+            Ok(()) => {
+                // Save recent directory
+                let _ = integrations::claude::state::save_recent_directory(&expanded_dir);
+
+                // Record issue-session mapping
+                let _ = integrations::claude::state::record_issue_session(&identifier, &identifier, &expanded_dir);
+
+                // Close the modal on success
+                self.modal = ModalState::None;
+            }
+            Err(e) => {
+                if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                    *error = Some(format!("Failed to spawn agent: {}", e));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::data::{GitHubPR, GitHubPRStatus};
+use crate::integrations::HTTP_CLIENT;
 use anyhow::{Context, Result};
 
 const GITHUB_API_URL: &str = "https://api.github.com";
@@ -23,7 +24,7 @@ pub async fn fetch_pr_from_url(config: &Config, pr_url: &str) -> Result<GitHubPR
 
 /// Fetch PR details from GitHub API
 pub async fn fetch_pr(config: &Config, owner: &str, repo: &str, number: u64) -> Result<GitHubPR> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
     let url = format!("{}/repos/{}/{}/pulls/{}", GITHUB_API_URL, owner, repo, number);
 

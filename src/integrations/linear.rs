@@ -3,15 +3,148 @@ use crate::data::{
     LinearAttachment, LinearChildRef, LinearCycle, LinearIssue, LinearLabel,
     LinearParentRef, LinearPriority, LinearStatus,
 };
-use crate::integrations::LinkedLinearIssue;
+use crate::integrations::{LinkedLinearIssue, HTTP_CLIENT};
 use anyhow::Result;
 use chrono::Utc;
+use serde::Deserialize;
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
+// Type-safe API response structures for Linear GraphQL API
+#[derive(Debug, Deserialize)]
+struct GraphQLResponse<T> {
+    data: Option<T>,
+    #[allow(dead_code)]
+    errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLError {
+    #[allow(dead_code)]
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ViewerData {
+    viewer: Viewer,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Viewer {
+    assigned_issues: IssueConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueConnection {
+    nodes: Vec<IssueNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueNode {
+    id: String,
+    identifier: String,
+    title: String,
+    description: Option<String>,
+    url: String,
+    updated_at: String,
+    created_at: String,
+    priority: Option<i64>,
+    estimate: Option<f64>,
+    state: Option<StateNode>,
+    cycle: Option<CycleNode>,
+    labels: Option<LabelConnection>,
+    project: Option<ProjectNode>,
+    team: Option<TeamNode>,
+    attachments: Option<AttachmentConnection>,
+    parent: Option<ParentNode>,
+    children: Option<ChildConnection>,
+    branch_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StateNode {
+    name: String,
+    #[serde(rename = "type")]
+    state_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CycleNode {
+    id: String,
+    name: String,
+    number: i64,
+    starts_at: String,
+    ends_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LabelConnection {
+    nodes: Vec<LabelNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LabelNode {
+    name: String,
+    color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectNode {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamNode {
+    name: String,
+    #[allow(dead_code)]
+    key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentConnection {
+    nodes: Vec<AttachmentNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentNode {
+    id: String,
+    url: String,
+    title: Option<String>,
+    subtitle: Option<String>,
+    source_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParentNode {
+    id: String,
+    identifier: String,
+    title: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChildConnection {
+    nodes: Vec<ChildNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChildNode {
+    id: String,
+    identifier: String,
+    title: Option<String>,
+    url: Option<String>,
+    priority: Option<i64>,
+    state: Option<StateNode>,
+}
+
 /// Fetch issues assigned to the current user
 pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIssue>> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
     let query = r#"
         query AssignedIssues {
@@ -94,16 +227,185 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
         .send()
         .await?;
 
-    let body: serde_json::Value = response.json().await?;
+    // Use typed deserialization for better error messages and type safety
+    let body: GraphQLResponse<ViewerData> = response.json().await?;
 
-    let issues = body["data"]["viewer"]["assignedIssues"]["nodes"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|node| parse_linear_issue(node))
-        .collect();
+    let issues = body
+        .data
+        .map(|d| {
+            d.viewer
+                .assigned_issues
+                .nodes
+                .into_iter()
+                .filter_map(parse_issue_node)
+                .collect()
+        })
+        .unwrap_or_default();
 
     Ok(issues)
+}
+
+/// Parse a typed IssueNode into LinkedLinearIssue
+fn parse_issue_node(node: IssueNode) -> Option<LinkedLinearIssue> {
+    let state = node.state.as_ref()?;
+    let state_type = &state.state_type;
+    let state_name = state.name.to_lowercase();
+
+    let status = parse_status(state_type, &state_name);
+
+    // Find GitHub PR URL in attachments
+    let pr_url = node.attachments.as_ref().and_then(|attachments| {
+        attachments.nodes.iter().find_map(|a| {
+            if a.url.contains("github.com") && a.url.contains("/pull/") {
+                Some(a.url.clone())
+            } else {
+                None
+            }
+        })
+    });
+
+    // Parse priority
+    let priority = node.priority.map(LinearPriority::from_int).unwrap_or_default();
+
+    // Parse cycle
+    let cycle = node.cycle.and_then(|c| {
+        Some(LinearCycle {
+            id: c.id,
+            name: c.name,
+            number: c.number as i32,
+            starts_at: c.starts_at.parse().ok().unwrap_or_else(Utc::now),
+            ends_at: c.ends_at.parse().ok().unwrap_or_else(Utc::now),
+        })
+    });
+
+    // Parse labels
+    let labels = node
+        .labels
+        .map(|l| {
+            l.nodes
+                .into_iter()
+                .map(|label| LinearLabel {
+                    name: label.name,
+                    color: label.color.unwrap_or_else(|| "#888888".to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse project and team
+    let project = node.project.map(|p| p.name);
+    let team = node.team.map(|t| t.name);
+
+    // Parse estimate
+    let estimate = node.estimate.map(|e| e as f32);
+
+    // Parse attachments (filter out GitHub PR links)
+    let attachments = node
+        .attachments
+        .map(|a| {
+            a.nodes
+                .into_iter()
+                .filter(|att| !(att.url.contains("github.com") && att.url.contains("/pull/")))
+                .map(|att| LinearAttachment {
+                    id: att.id,
+                    url: att.url,
+                    title: att.title.unwrap_or_else(|| "Untitled".to_string()),
+                    subtitle: att.subtitle,
+                    source_type: att.source_type,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse parent
+    let parent = node.parent.and_then(|p| {
+        Some(LinearParentRef {
+            id: p.id,
+            identifier: p.identifier,
+            title: p.title.unwrap_or_default(),
+            url: p.url.unwrap_or_default(),
+        })
+    });
+
+    // Parse children
+    let children = node
+        .children
+        .map(|c| {
+            c.nodes
+                .into_iter()
+                .filter_map(|child| {
+                    let child_state = child.state.as_ref()?;
+                    let child_status =
+                        parse_status(&child_state.state_type, &child_state.name.to_lowercase());
+                    let child_priority = child.priority.map(LinearPriority::from_int).unwrap_or_default();
+
+                    Some(LinearChildRef {
+                        id: child.id,
+                        identifier: child.identifier,
+                        title: child.title.unwrap_or_default(),
+                        url: child.url.unwrap_or_default(),
+                        status: child_status,
+                        priority: child_priority,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let issue = LinearIssue {
+        id: node.id,
+        identifier: node.identifier,
+        title: node.title,
+        description: node.description,
+        status,
+        priority,
+        url: node.url,
+        created_at: node.created_at.parse().ok().unwrap_or_else(Utc::now),
+        updated_at: node.updated_at.parse().ok().unwrap_or_else(Utc::now),
+        cycle,
+        labels,
+        project,
+        team,
+        estimate,
+        attachments,
+        parent,
+        children,
+    };
+
+    Some(LinkedLinearIssue {
+        issue,
+        linked_pr_url: pr_url,
+        working_directory: node.branch_name,
+    })
+}
+
+/// Parse Linear state type and name into LinearStatus
+fn parse_status(state_type: &str, state_name: &str) -> LinearStatus {
+    match state_type {
+        "triage" => LinearStatus::Triage,
+        "backlog" => LinearStatus::Backlog,
+        "unstarted" => LinearStatus::Todo,
+        "started" => LinearStatus::InProgress,
+        "completed" => LinearStatus::Done,
+        "canceled" => {
+            if state_name.contains("duplicate") {
+                LinearStatus::Duplicate
+            } else {
+                LinearStatus::Canceled
+            }
+        }
+        _ => {
+            if state_name.contains("review") {
+                LinearStatus::InReview
+            } else if state_name.contains("duplicate") {
+                LinearStatus::Duplicate
+            } else if state_name.contains("triage") {
+                LinearStatus::Triage
+            } else {
+                LinearStatus::InProgress
+            }
+        }
+    }
 }
 
 fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
@@ -327,7 +629,7 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
 /// Search all Linear issues (for full search mode)
 #[allow(dead_code)]
 pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIssue>> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
     let graphql_query = r#"
         query SearchIssues($query: String!) {

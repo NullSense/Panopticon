@@ -85,8 +85,13 @@ impl ClaudeWatcher {
         changed
     }
 
-    /// Get current sessions
-    pub fn get_sessions(&self) -> Vec<AgentSession> {
+    /// Get current sessions (returns Arc to avoid cloning entire Vec)
+    pub fn get_sessions(&self) -> Arc<RwLock<Vec<AgentSession>>> {
+        Arc::clone(&self.sessions)
+    }
+
+    /// Get a snapshot of current sessions (clones the data)
+    pub fn get_sessions_snapshot(&self) -> Vec<AgentSession> {
         self.sessions.read().map(|g| g.clone()).unwrap_or_default()
     }
 }

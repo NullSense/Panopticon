@@ -9,7 +9,19 @@ use crate::data::Workstream;
 use crate::tui::{RefreshProgress, RefreshResult};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
+use once_cell::sync::Lazy;
+use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Shared HTTP client for all API requests to enable connection pooling
+pub static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(5)
+        .build()
+        .expect("Failed to create HTTP client")
+});
 
 /// Fetches all workstreams by querying Linear, then enriching with GitHub/Vercel data
 pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
@@ -20,16 +32,25 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
     let mut workstreams = Vec::new();
     for issue in issues {
         let pr = if let Some(pr_url) = &issue.linked_pr_url {
-            github::fetch_pr_from_url(config, pr_url).await.ok()
+            match github::fetch_pr_from_url(config, pr_url).await {
+                Ok(pr) => Some(pr),
+                Err(e) => {
+                    tracing::debug!("Failed to fetch PR from {}: {}", pr_url, e);
+                    None
+                }
+            }
         } else {
             None
         };
 
         let deployment = if let Some(ref pr) = pr {
-            vercel::fetch_deployment_for_branch(config, &pr.repo, &pr.branch)
-                .await
-                .ok()
-                .flatten()
+            match vercel::fetch_deployment_for_branch(config, &pr.repo, &pr.branch).await {
+                Ok(deploy) => deploy,
+                Err(e) => {
+                    tracing::debug!("Failed to fetch Vercel deployment for {}/{}: {}", pr.repo, pr.branch, e);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -55,24 +76,30 @@ pub async fn fetch_workstreams_incremental(
     tx: mpsc::Sender<RefreshResult>,
 ) -> Result<()> {
     // Step 1: Fetch all Linear issues first
-    let _ = tx
+    if let Err(e) = tx
         .send(RefreshResult::Progress(RefreshProgress {
             total_issues: 0,
             completed: 0,
             current_stage: "Fetching Linear issues...".to_string(),
         }))
-        .await;
+        .await
+    {
+        tracing::warn!("Failed to send progress update: {}", e);
+    }
 
     let issues = linear::fetch_assigned_issues(config).await?;
     let total = issues.len();
 
-    let _ = tx
+    if let Err(e) = tx
         .send(RefreshResult::Progress(RefreshProgress {
             total_issues: total,
             completed: 0,
             current_stage: format!("Found {} issues, enriching...", total),
         }))
-        .await;
+        .await
+    {
+        tracing::warn!("Failed to send progress update: {}", e);
+    }
 
     // Step 2: Process issues in parallel (batch of 5 concurrent)
     let config = config.clone();
@@ -82,7 +109,7 @@ pub async fn fetch_workstreams_incremental(
             let tx = tx.clone();
             async move {
                 // Send progress
-                let _ = tx
+                if let Err(e) = tx
                     .send(RefreshResult::Progress(RefreshProgress {
                         total_issues: total,
                         completed: i,
@@ -93,21 +120,33 @@ pub async fn fetch_workstreams_incremental(
                             total
                         ),
                     }))
-                    .await;
+                    .await
+                {
+                    tracing::debug!("Progress channel closed: {}", e);
+                }
 
                 // Fetch GitHub PR if linked
                 let pr = if let Some(pr_url) = &issue.linked_pr_url {
-                    github::fetch_pr_from_url(&config, pr_url).await.ok()
+                    match github::fetch_pr_from_url(&config, pr_url).await {
+                        Ok(pr) => Some(pr),
+                        Err(e) => {
+                            tracing::debug!("Failed to fetch PR from {}: {}", pr_url, e);
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
 
                 // Fetch Vercel deployment if PR exists
                 let deployment = if let Some(ref pr) = pr {
-                    vercel::fetch_deployment_for_branch(&config, &pr.repo, &pr.branch)
-                        .await
-                        .ok()
-                        .flatten()
+                    match vercel::fetch_deployment_for_branch(&config, &pr.repo, &pr.branch).await {
+                        Ok(deploy) => deploy,
+                        Err(e) => {
+                            tracing::debug!("Failed to fetch Vercel deployment for {}/{}: {}", pr.repo, pr.branch, e);
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -122,14 +161,18 @@ pub async fn fetch_workstreams_incremental(
                     agent_session: agent,
                 };
 
-                let _ = tx.send(RefreshResult::Workstream(ws)).await;
+                if let Err(e) = tx.send(RefreshResult::Workstream(ws)).await {
+                    tracing::debug!("Workstream channel closed: {}", e);
+                }
             }
         })
         .buffer_unordered(5) // Process 5 issues concurrently
         .collect::<Vec<_>>()
         .await;
 
-    let _ = tx.send(RefreshResult::Complete).await;
+    if let Err(e) = tx.send(RefreshResult::Complete).await {
+        tracing::debug!("Complete channel closed: {}", e);
+    }
     Ok(())
 }
 

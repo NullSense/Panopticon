@@ -79,9 +79,7 @@ async fn main() -> Result<()> {
     }
 
     if args.daemon {
-        tracing::info!("Starting panopticon daemon...");
-        // TODO: Run as daemon
-        todo!("Daemon mode not yet implemented");
+        anyhow::bail!("Daemon mode is not yet implemented. Run without --daemon flag to use the TUI.");
     }
 
     // Run TUI
