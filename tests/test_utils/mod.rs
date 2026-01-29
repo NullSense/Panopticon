@@ -37,18 +37,27 @@ pub fn parse_issue(node: &Value) -> Option<ParsedIssue> {
     use chrono::Utc;
 
     let state_type = node["state"]["type"].as_str()?;
+    let state_name = node["state"]["name"]
+        .as_str()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
     let status = match state_type {
         "backlog" => LinearStatus::Backlog,
         "unstarted" => LinearStatus::Todo,
-        "started" => LinearStatus::InProgress,
+        "started" => {
+            // Check state_name for "review" before defaulting to InProgress
+            // Many Linear setups have "In Review" states with type "started"
+            if state_name.contains("review") {
+                LinearStatus::InReview
+            } else {
+                LinearStatus::InProgress
+            }
+        }
         "completed" => LinearStatus::Done,
         "canceled" => LinearStatus::Canceled,
         _ => {
-            if node["state"]["name"]
-                .as_str()
-                .map(|s| s.to_lowercase().contains("review"))
-                .unwrap_or(false)
-            {
+            // Fallback for unknown types
+            if state_name.contains("review") {
                 LinearStatus::InReview
             } else {
                 LinearStatus::InProgress
