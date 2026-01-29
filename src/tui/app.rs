@@ -1128,7 +1128,8 @@ impl App {
     }
 
     pub fn close_description_modal(&mut self) {
-        self.modal = ModalState::None;
+        // Go back to link menu (issue details), not main view
+        self.modal = ModalState::LinkMenu { show_links_popup: false };
         self.description_scroll = 0;
     }
 
