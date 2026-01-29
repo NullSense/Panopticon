@@ -194,24 +194,40 @@ $windows = Get-Process | Where-Object {$_.MainWindowTitle -like "*claude*"}
 [tokens]
 linear = "lin_api_..."
 github = "ghp_..."
-vercel = "..."
+vercel = "..."  # optional
 
 [linear]
-# Only show issues assigned to me by default
-filter = "assignee:me"
+filter = "assignee:me"       # Only show issues assigned to you
+interval_secs = 15           # Refresh interval (default: 15s)
+fetch_limit = 150            # Max issues per request
+
+[github]
+username = "your-github-username"
+org = "your-org"             # optional
+
+[vercel]
+team_id = "team_..."         # optional
+project_id = "prj_..."       # optional
 
 [polling]
 github_interval_secs = 30
 vercel_interval_secs = 30
+claude_interval_secs = 5
+user_action_cooldown_secs = 10
+
+[cache]
+enabled = true
+file = "~/.cache/panopticon/workstreams.json"
+max_age_hours = 24           # Stale indicator threshold
 
 [notifications]
-# Notify when Claude needs input
 enabled = true
 sound = true
 
 [ui]
-# Theme
-theme = "default"  # or "nord", "gruvbox", etc.
+show_sub_issues = true       # Show child issues under parents
+show_completed = false       # Hide completed issues
+show_canceled = false        # Hide canceled/duplicate issues
 ```
 
 ## Files & Directories
@@ -220,6 +236,9 @@ theme = "default"  # or "nord", "gruvbox", etc.
 ~/.config/panopticon/
 ├── config.toml          # Main configuration
 └── sessions.json        # Cached session state
+
+~/.cache/panopticon/
+└── workstreams.json     # Cached workstream data (for quick startup)
 
 ~/.claude/settings.json  # Claude Code hooks (modified)
 

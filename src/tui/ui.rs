@@ -2081,41 +2081,42 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
 }
 
 fn draw_filter_menu(f: &mut Frame, app: &App) {
-    let area = popup_rect(50, 70, 38, 18, f.area());
+    // Calculate height based on content
+    let base_height = 25; // Base height for headers and footer
+    let cycle_height = app.available_cycles.len().min(5) + 2;
+    let project_height = if app.available_projects.is_empty() { 0 } else { app.available_projects.len().min(5) + 2 };
+    let total_height = (base_height + cycle_height + project_height).min(40) as u16;
+
+    let area = popup_rect(55, 80, 42, total_height, f.area());
 
     f.render_widget(Clear, area);
 
     let active_style = Style::default().fg(Color::White);
     let dim_style = Style::default().fg(Color::DarkGray);
+    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
 
+    // ─────────────────────────────────────────────────────────────────
     // Cycle section
-    lines.push(Line::from(Span::styled("  CYCLE", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
-
-    // "All cycles" option
-    let all_marker = if app.filter_cycles.is_empty() { "[x]" } else { "[ ]" };
-    lines.push(Line::from(Span::styled(
-        format!("  [0] All cycles                    {}", all_marker),
-        if app.filter_cycles.is_empty() { active_style } else { dim_style }
-    )));
-
-    // Individual cycles
-    for (idx, cycle) in app.available_cycles.iter().enumerate().take(9) {
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("  CYCLE", header_style)));
+    lines.extend(render_filter_checkbox(
+        "0", "All cycles", app.filter_cycles.is_empty(), active_style, dim_style
+    ));
+    for (idx, cycle) in app.available_cycles.iter().enumerate().take(5) {
         let is_selected = app.filter_cycles.contains(&cycle.id);
-        let marker = if is_selected { "[x]" } else { "[ ]" };
-        let label = format!("  [{}] Cycle {} ({})            {}", idx + 1, cycle.number, &cycle.name[..cycle.name.len().min(12)], marker);
-        lines.push(Line::from(Span::styled(
-            label,
-            if is_selected { active_style } else { dim_style }
-        )));
+        let label = format!("Cycle {} ({})", cycle.number, truncate_str(&cycle.name, 10));
+        lines.extend(render_filter_checkbox(
+            &(idx + 1).to_string(), &label, is_selected, active_style, dim_style
+        ));
     }
-
     lines.push(Line::from(""));
 
+    // ─────────────────────────────────────────────────────────────────
     // Priority section
-    lines.push(Line::from(Span::styled("  PRIORITY", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
-
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("  PRIORITY", header_style)));
     let priorities = [
         ('u', LinearPriority::Urgent, "Urgent"),
         ('h', LinearPriority::High, "High"),
@@ -2123,47 +2124,49 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
         ('l', LinearPriority::Low, "Low"),
         ('n', LinearPriority::NoPriority, "No Priority"),
     ];
-
     for (key, priority, label) in priorities {
         let is_selected = app.filter_priorities.is_empty() || app.filter_priorities.contains(&priority);
-        let marker = if is_selected { "[x]" } else { "[ ]" };
         let priority_cfg = priority_config(priority);
-        // Show priority icon with its color
-        lines.push(Line::from(vec![
-            Span::styled(format!("  [{}] ", key), if is_selected { active_style } else { dim_style }),
-            Span::styled(format!("{} ", priority_cfg.icon), priority_cfg.style),
-            Span::styled(format!("{:<17}", label), if is_selected { active_style } else { dim_style }),
-            Span::styled(format!("  {}", marker), if is_selected { active_style } else { dim_style }),
-        ]));
+        lines.push(render_priority_checkbox(key, priority_cfg, label, is_selected, active_style, dim_style));
+    }
+    lines.push(Line::from(""));
+
+    // ─────────────────────────────────────────────────────────────────
+    // Project section (only if projects available)
+    // ─────────────────────────────────────────────────────────────────
+    if !app.available_projects.is_empty() {
+        lines.push(Line::from(Span::styled("  PROJECT", header_style)));
+        lines.extend(render_filter_checkbox(
+            "P", "All projects", app.filter_projects.is_empty(), active_style, dim_style
+        ));
+        for (idx, project) in app.available_projects.iter().enumerate().take(5) {
+            let is_selected = app.filter_projects.contains(&project.id);
+            lines.extend(render_filter_checkbox(
+                &format!("p{}", idx + 1), &truncate_str(&project.name, 20), is_selected, active_style, dim_style
+            ));
+        }
+        lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(""));
-
+    // ─────────────────────────────────────────────────────────────────
     // Status section
-    lines.push(Line::from(Span::styled("  STATUS", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
-
-    let completed_marker = if app.show_completed { "[x]" } else { "[ ]" };
-    lines.push(Line::from(Span::styled(
-        format!("  [d] Show completed              {}", completed_marker),
-        if app.show_completed { active_style } else { dim_style }
-    )));
-
-    let canceled_marker = if app.show_canceled { "[x]" } else { "[ ]" };
-    lines.push(Line::from(Span::styled(
-        format!("  [x] Show canceled               {}", canceled_marker),
-        if app.show_canceled { active_style } else { dim_style }
-    )));
-
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("  STATUS", header_style)));
+    lines.extend(render_filter_checkbox(
+        "d", "Show completed", app.show_completed, active_style, dim_style
+    ));
+    lines.extend(render_filter_checkbox(
+        "x", "Show canceled", app.show_canceled, active_style, dim_style
+    ));
     lines.push(Line::from(""));
 
+    // ─────────────────────────────────────────────────────────────────
     // Hierarchy section
-    lines.push(Line::from(Span::styled("  HIERARCHY", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
-
-    let sub_marker = if app.show_sub_issues { "[x]" } else { "[ ]" };
-    lines.push(Line::from(Span::styled(
-        format!("  [t] Show sub-issues             {}", sub_marker),
-        if app.show_sub_issues { active_style } else { dim_style }
-    )));
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("  HIERARCHY", header_style)));
+    lines.extend(render_filter_checkbox(
+        "t", "Show sub-issues", app.show_sub_issues, active_style, dim_style
+    ));
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  [a] All | [c] Clear | Esc: Close", dim_style)));
@@ -2177,6 +2180,41 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     let paragraph = Paragraph::new(lines).block(block);
 
     f.render_widget(paragraph, area);
+}
+
+/// Render a filter checkbox line
+fn render_filter_checkbox<'a>(
+    key: &str,
+    label: &str,
+    is_selected: bool,
+    active_style: Style,
+    dim_style: Style,
+) -> Vec<Line<'a>> {
+    let marker = if is_selected { "[x]" } else { "[ ]" };
+    let style = if is_selected { active_style } else { dim_style };
+    vec![Line::from(Span::styled(
+        format!("  [{}] {:<28} {}", key, label, marker),
+        style,
+    ))]
+}
+
+/// Render a priority filter checkbox with icon
+fn render_priority_checkbox<'a>(
+    key: char,
+    priority_cfg: StatusConfig,
+    label: &str,
+    is_selected: bool,
+    active_style: Style,
+    dim_style: Style,
+) -> Line<'a> {
+    let marker = if is_selected { "[x]" } else { "[ ]" };
+    let style = if is_selected { active_style } else { dim_style };
+    Line::from(vec![
+        Span::styled(format!("  [{}] ", key), style),
+        Span::styled(format!("{} ", priority_cfg.icon), priority_cfg.style),
+        Span::styled(format!("{:<20}", label), style),
+        Span::styled(format!("  {}", marker), style),
+    ])
 }
 
 fn popup_rect(percent_x: u16, percent_y: u16, min_width: u16, min_height: u16, r: Rect) -> Rect {

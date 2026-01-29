@@ -2,6 +2,8 @@
 
 Terminal dashboard for monitoring AI agent sessions (Claude Code, Clawdbot) linked to Linear issues, GitHub PRs, and Vercel deployments.
 
+![Panopticon Dashboard](panopticon.png)
+
 ## Installation
 
 ### Prerequisites
@@ -68,6 +70,8 @@ cargo run
 | `t` | Teleport to Claude session window |
 | `p` | Preview Claude output |
 | `r` | Refresh data |
+| `s` | Sort options |
+| `f` | Filter options (cycle, priority, project, assignee) |
 | `?` | Show help |
 | `q` | Quit |
 
@@ -82,15 +86,37 @@ github = "ghp_..."
 vercel = "..."  # optional
 
 [linear]
-filter = "assignee:me"  # Only show issues assigned to you
+filter = "assignee:me"      # Only show issues assigned to you
+interval_secs = 15          # Refresh interval (default: 15s)
+fetch_limit = 150           # Max issues to fetch per request
+
+[github]
+username = "your-github-username"
+org = "your-org"            # optional
+
+[vercel]
+team_id = "team_..."        # optional
+project_id = "prj_..."      # optional
 
 [polling]
 github_interval_secs = 30
 vercel_interval_secs = 30
+claude_interval_secs = 5
+user_action_cooldown_secs = 10  # Min time between user-triggered refreshes
+
+[cache]
+enabled = true
+file = "~/.cache/panopticon/workstreams.json"
+max_age_hours = 24          # Show stale indicator after this
 
 [notifications]
 enabled = true
 sound = true
+
+[ui]
+show_sub_issues = true      # Show child issues under parents
+show_completed = false      # Hide completed issues by default
+show_canceled = false       # Hide canceled/duplicate issues
 ```
 
 ## Development
