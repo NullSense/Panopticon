@@ -80,10 +80,13 @@ pub fn init() -> Result<()> {
 
 /// Handle internal hook command (called by Claude hooks)
 pub fn handle_hook(event: &str, session_id: &str, cwd: &str) -> Result<()> {
+    // Map hook events to status strings
+    // Note: "stop" is passed directly to update_session which handles the "done" conversion
+    // This ensures the special "stop" handling in update_session (preserving existing session) works
     let status = match event {
         "start" => "running",
         "active" => "running",
-        "stop" => "done",
+        "stop" => "stop", // Pass "stop" directly, update_session handles conversion to "done"
         _ => "idle",
     };
 

@@ -1,3 +1,4 @@
+pub mod agent_cache;
 pub mod claude;
 pub mod github;
 pub mod linear;
@@ -10,6 +11,7 @@ use crate::tui::{RefreshProgress, RefreshResult};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -28,7 +30,10 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
     // 1. Get Linear issues assigned to user
     let issues = linear::fetch_assigned_issues(config).await?;
 
-    // 2. For each issue, find linked PR and deployment
+    // 2. Pre-load agent session cache ONCE (1 file read + 1 HTTP call total)
+    let agent_cache = agent_cache::AgentSessionCache::load().await;
+
+    // 3. For each issue, find linked PR and deployment
     let mut workstreams = Vec::new();
     for issue in issues {
         let pr = if let Some(pr_url) = &issue.linked_pr_url {
@@ -55,8 +60,8 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             None
         };
 
-        // Try to find agent session - check Claude first, then Clawdbot
-        let agent = find_agent_session(issue.working_directory.as_deref()).await;
+        // Find agent session via O(1) cache lookup (instead of file read + HTTP call)
+        let agent = agent_cache.find_for_directory(issue.working_directory.as_deref());
 
         workstreams.push(Workstream {
             linear_issue: issue.issue,
@@ -94,6 +99,21 @@ pub async fn fetch_workstreams_incremental(
         .send(RefreshResult::Progress(RefreshProgress {
             total_issues: total,
             completed: 0,
+            current_stage: format!("Found {} issues, loading agent sessions...", total),
+        }))
+        .await
+    {
+        tracing::warn!("Failed to send progress update: {}", e);
+    }
+
+    // Step 2: Pre-load agent session cache ONCE (1 file read + 1 HTTP call total)
+    // This replaces 100+ individual file reads and HTTP calls
+    let agent_cache = Arc::new(agent_cache::AgentSessionCache::load().await);
+
+    if let Err(e) = tx
+        .send(RefreshResult::Progress(RefreshProgress {
+            total_issues: total,
+            completed: 0,
             current_stage: format!("Found {} issues, enriching...", total),
         }))
         .await
@@ -101,12 +121,13 @@ pub async fn fetch_workstreams_incremental(
         tracing::warn!("Failed to send progress update: {}", e);
     }
 
-    // Step 2: Process issues in parallel (batch of 5 concurrent)
+    // Step 3: Process issues in parallel (batch of 5 concurrent)
     let config = config.clone();
     stream::iter(issues.into_iter().enumerate())
         .map(|(i, issue)| {
             let config = config.clone();
             let tx = tx.clone();
+            let agent_cache = Arc::clone(&agent_cache);
             async move {
                 // Send progress
                 if let Err(e) = tx
@@ -151,8 +172,8 @@ pub async fn fetch_workstreams_incremental(
                     None
                 };
 
-                // Find agent session
-                let agent = find_agent_session(issue.working_directory.as_deref()).await;
+                // Find agent session via O(1) cache lookup (instead of file read + HTTP call)
+                let agent = agent_cache.find_for_directory(issue.working_directory.as_deref());
 
                 let ws = Workstream {
                     linear_issue: issue.issue,
@@ -174,17 +195,6 @@ pub async fn fetch_workstreams_incremental(
         tracing::debug!("Complete channel closed: {}", e);
     }
     Ok(())
-}
-
-/// Find an agent session for a working directory, checking both Claude and Moltbot
-async fn find_agent_session(dir: Option<&str>) -> Option<crate::data::AgentSession> {
-    // Try Claude Code first
-    if let Some(session) = claude::find_session_for_directory(dir).await {
-        return Some(session);
-    }
-
-    // Fall back to Moltbot
-    moltbot::find_session_for_directory(dir).await
 }
 
 /// Intermediate struct for Linear issues with extra linking info

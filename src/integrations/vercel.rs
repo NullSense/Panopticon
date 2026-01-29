@@ -20,9 +20,11 @@ pub async fn fetch_deployment_for_branch(
     let client = &*HTTP_CLIENT;
 
     // Query deployments filtered by branch (meta.githubCommitRef)
+    // URL encode the branch name to handle special characters like "/" in "fix/issue-123"
     let url = format!(
         "{}/v6/deployments?limit=1&meta-githubCommitRef={}",
-        VERCEL_API_URL, branch
+        VERCEL_API_URL,
+        urlencoding::encode(branch)
     );
 
     let response = client

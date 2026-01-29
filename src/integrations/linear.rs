@@ -149,7 +149,7 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
     let query = r#"
         query AssignedIssues {
             viewer {
-                assignedIssues(first: 50, filter: { state: { type: { nin: ["canceled", "completed"] } } }) {
+                assignedIssues(first: 100) {
                     nodes {
                         id
                         identifier
@@ -385,7 +385,15 @@ fn parse_status(state_type: &str, state_name: &str) -> LinearStatus {
         "triage" => LinearStatus::Triage,
         "backlog" => LinearStatus::Backlog,
         "unstarted" => LinearStatus::Todo,
-        "started" => LinearStatus::InProgress,
+        "started" => {
+            // Check state_name for "review" before defaulting to InProgress
+            // Many Linear setups have "In Review" states with type "started"
+            if state_name.contains("review") {
+                LinearStatus::InReview
+            } else {
+                LinearStatus::InProgress
+            }
+        }
         "completed" => LinearStatus::Done,
         "canceled" => {
             if state_name.contains("duplicate") {
@@ -395,6 +403,7 @@ fn parse_status(state_type: &str, state_name: &str) -> LinearStatus {
             }
         }
         _ => {
+            // Fallback for unknown types - check state_name for hints
             if state_name.contains("review") {
                 LinearStatus::InReview
             } else if state_name.contains("duplicate") {
