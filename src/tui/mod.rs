@@ -15,6 +15,11 @@ use std::time::Duration;
 pub use app::App;
 
 pub async fn run(config: Config) -> Result<()> {
+    // Check if stdout is a terminal
+    if !std::io::IsTerminal::is_terminal(&io::stdout()) {
+        anyhow::bail!("panopticon requires an interactive terminal");
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -74,6 +79,55 @@ async fn run_app(
                         }
                         _ => {}
                     }
+                } else if app.show_help {
+                    // Handle help modal key presses
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                            app.show_help = false;
+                        }
+                        KeyCode::Char('1') => {
+                            app.help_tab = 0;
+                        }
+                        KeyCode::Char('2') => {
+                            app.help_tab = 1;
+                        }
+                        _ => {}
+                    }
+                } else if app.resize_mode {
+                    // Handle resize mode key presses
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('R') => {
+                            app.exit_resize_mode();
+                        }
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            app.resize_column_narrower();
+                        }
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            app.resize_column_wider();
+                        }
+                        KeyCode::Tab => {
+                            app.resize_next_column();
+                        }
+                        KeyCode::BackTab => {
+                            app.resize_prev_column();
+                        }
+                        _ => {}
+                    }
+                } else if app.show_sort_menu {
+                    // Handle sort menu key presses
+                    use crate::data::SortMode;
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.show_sort_menu = false;
+                        }
+                        KeyCode::Char(c) if ('1'..='6').contains(&c) => {
+                            let idx = c.to_digit(10).unwrap() as usize;
+                            if let Some(mode) = SortMode::from_index(idx) {
+                                app.set_sort_mode(mode);
+                            }
+                        }
+                        _ => {}
+                    }
                 } else if app.show_link_menu {
                     // Handle link menu key presses
                     match key.code {
@@ -95,6 +149,43 @@ async fn run_app(
                         KeyCode::Char('4') => {
                             app.teleport_to_session().await?;
                             app.show_link_menu = false;
+                        }
+                        _ => {}
+                    }
+                } else if app.show_filter_menu {
+                    // Handle filter menu key presses
+                    use crate::data::LinearPriority;
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.show_filter_menu = false;
+                        }
+                        // Cycle filters (0-9)
+                        KeyCode::Char(c) if ('0'..='9').contains(&c) => {
+                            let idx = c.to_digit(10).unwrap() as usize;
+                            app.toggle_cycle_filter(idx);
+                        }
+                        // Priority filters
+                        KeyCode::Char('u') => {
+                            app.toggle_priority_filter(LinearPriority::Urgent);
+                        }
+                        KeyCode::Char('h') => {
+                            app.toggle_priority_filter(LinearPriority::High);
+                        }
+                        KeyCode::Char('m') => {
+                            app.toggle_priority_filter(LinearPriority::Medium);
+                        }
+                        KeyCode::Char('l') => {
+                            app.toggle_priority_filter(LinearPriority::Low);
+                        }
+                        KeyCode::Char('n') => {
+                            app.toggle_priority_filter(LinearPriority::NoPriority);
+                        }
+                        // Select all / clear all
+                        KeyCode::Char('a') => {
+                            app.clear_all_filters();
+                        }
+                        KeyCode::Char('c') => {
+                            app.select_all_filters();
                         }
                         _ => {}
                     }
@@ -161,7 +252,15 @@ async fn run_app(
                         }
                         // Sorting
                         KeyCode::Char('s') => {
-                            app.cycle_sort_mode();
+                            app.toggle_sort_menu();
+                        }
+                        // Filtering
+                        KeyCode::Char('f') => {
+                            app.toggle_filter_menu();
+                        }
+                        // Resize columns
+                        KeyCode::Char('R') => {
+                            app.toggle_resize_mode();
                         }
                         _ => {}
                     }

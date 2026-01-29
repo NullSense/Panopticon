@@ -1,7 +1,7 @@
 pub mod claude;
-pub mod clawdbot;
 pub mod github;
 pub mod linear;
+pub mod moltbot;
 pub mod vercel;
 
 use crate::config::Config;
@@ -45,15 +45,15 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
     Ok(workstreams)
 }
 
-/// Find an agent session for a working directory, checking both Claude and Clawdbot
+/// Find an agent session for a working directory, checking both Claude and Moltbot
 async fn find_agent_session(dir: Option<&str>) -> Option<crate::data::AgentSession> {
     // Try Claude Code first
     if let Some(session) = claude::find_session_for_directory(dir).await {
         return Some(session);
     }
 
-    // Fall back to Clawdbot
-    clawdbot::find_session_for_directory(dir).await
+    // Fall back to Moltbot
+    moltbot::find_session_for_directory(dir).await
 }
 
 /// Intermediate struct for Linear issues with extra linking info

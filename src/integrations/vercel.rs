@@ -73,6 +73,7 @@ pub async fn fetch_deployment_for_branch(
 
 /// Alternative: Get deployment status from GitHub commit statuses
 /// This works even without Vercel token if Vercel GitHub integration is set up
+#[allow(dead_code)]
 pub async fn fetch_deployment_from_github_status(
     config: &Config,
     owner: &str,

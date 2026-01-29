@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::data::{LinearIssue, LinearStatus};
+use crate::data::{LinearCycle, LinearIssue, LinearPriority, LinearStatus};
 use crate::integrations::LinkedLinearIssue;
 use anyhow::Result;
 use chrono::Utc;
@@ -21,9 +21,17 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
                         description
                         url
                         updatedAt
+                        priority
                         state {
                             name
                             type
+                        }
+                        cycle {
+                            id
+                            name
+                            number
+                            startsAt
+                            endsAt
                         }
                         attachments {
                             nodes {
@@ -94,17 +102,45 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
             })
         });
 
+    // Parse priority (0-4 integer from API)
+    let priority = node["priority"]
+        .as_i64()
+        .map(LinearPriority::from_int)
+        .unwrap_or_default();
+
+    // Parse cycle if present
+    let cycle = if node["cycle"].is_object() {
+        let c = &node["cycle"];
+        Some(LinearCycle {
+            id: c["id"].as_str()?.to_string(),
+            name: c["name"].as_str().unwrap_or("Unnamed").to_string(),
+            number: c["number"].as_i64().unwrap_or(0) as i32,
+            starts_at: c["startsAt"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(Utc::now),
+            ends_at: c["endsAt"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(Utc::now),
+        })
+    } else {
+        None
+    };
+
     let issue = LinearIssue {
         id: node["id"].as_str()?.to_string(),
         identifier: node["identifier"].as_str()?.to_string(),
         title: node["title"].as_str()?.to_string(),
         description: node["description"].as_str().map(String::from),
         status,
+        priority,
         url: node["url"].as_str()?.to_string(),
         updated_at: node["updatedAt"]
             .as_str()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(Utc::now),
+        cycle,
     };
 
     Some(LinkedLinearIssue {
@@ -115,6 +151,7 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
 }
 
 /// Search all Linear issues (for full search mode)
+#[allow(dead_code)]
 pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIssue>> {
     let client = reqwest::Client::new();
 
@@ -128,9 +165,17 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                     description
                     url
                     updatedAt
+                    priority
                     state {
                         name
                         type
+                    }
+                    cycle {
+                        id
+                        name
+                        number
+                        startsAt
+                        endsAt
                     }
                 }
             }
@@ -165,17 +210,44 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                 _ => LinearStatus::InProgress,
             };
 
+            let priority = node["priority"]
+                .as_i64()
+                .map(LinearPriority::from_int)
+                .unwrap_or_default();
+
+            // Parse cycle if present
+            let cycle = if node["cycle"].is_object() {
+                let c = &node["cycle"];
+                Some(LinearCycle {
+                    id: c["id"].as_str()?.to_string(),
+                    name: c["name"].as_str().unwrap_or("Unnamed").to_string(),
+                    number: c["number"].as_i64().unwrap_or(0) as i32,
+                    starts_at: c["startsAt"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(Utc::now),
+                    ends_at: c["endsAt"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(Utc::now),
+                })
+            } else {
+                None
+            };
+
             Some(LinearIssue {
                 id: node["id"].as_str()?.to_string(),
                 identifier: node["identifier"].as_str()?.to_string(),
                 title: node["title"].as_str()?.to_string(),
                 description: node["description"].as_str().map(String::from),
                 status,
+                priority,
                 url: node["url"].as_str()?.to_string(),
                 updated_at: node["updatedAt"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(Utc::now),
+                cycle,
             })
         })
         .collect();
