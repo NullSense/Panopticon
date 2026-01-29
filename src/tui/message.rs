@@ -179,6 +179,26 @@ pub enum Message {
     NavigateBack,
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Spawn agent modal
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Open spawn agent modal
+    OpenSpawnAgentModal,
+    /// Close spawn agent modal
+    CloseSpawnAgentModal,
+    /// Add character to directory input
+    SpawnDirectoryInput(char),
+    /// Remove last character from directory input
+    SpawnDirectoryBackspace,
+    /// Select previous directory in recent list
+    SpawnDirSelectUp,
+    /// Select next directory in recent list
+    SpawnDirSelectDown,
+    /// Confirm and spawn agent
+    ConfirmSpawnAgent,
+    /// Clear directory input
+    ClearSpawnDirectoryInput,
+
+    // ─────────────────────────────────────────────────────────────────────────
     // No-op
     // ─────────────────────────────────────────────────────────────────────────
     /// No operation (for unhandled keys or pending chords)

@@ -73,6 +73,8 @@ pub fn dispatch(app: &App, input: &mut InputState, key: KeyEvent) -> Message {
         dispatch_link_menu(app, input, key)
     } else if app.show_filter_menu() {
         dispatch_filter_menu(key)
+    } else if app.show_spawn_modal() {
+        dispatch_spawn_modal(key)
     } else {
         dispatch_normal_mode(input, key)
     }
@@ -108,6 +110,7 @@ fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
         KeyCode::Char('h') | KeyCode::Left => Message::CollapseSection,
         KeyCode::Char('l') | KeyCode::Right => Message::ExpandSection,
         KeyCode::Char('s') => Message::ToggleSortMenu,
+        KeyCode::Char('S') => Message::OpenSpawnAgentModal,
         KeyCode::Char('f') => Message::ToggleFilterMenu,
         KeyCode::Char('R') => Message::ToggleResizeMode,
         _ => Message::None,
@@ -180,6 +183,22 @@ fn dispatch_sort_menu(key: KeyEvent) -> Message {
                 Message::None
             }
         }
+        _ => Message::None,
+    }
+}
+
+/// Handle keys in spawn agent modal.
+fn dispatch_spawn_modal(key: KeyEvent) -> Message {
+    match key.code {
+        KeyCode::Esc => Message::CloseSpawnAgentModal,
+        KeyCode::Enter => Message::ConfirmSpawnAgent,
+        KeyCode::Backspace => Message::SpawnDirectoryBackspace,
+        KeyCode::Up => Message::SpawnDirSelectUp,
+        KeyCode::Down => Message::SpawnDirSelectDown,
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Message::ClearSpawnDirectoryInput
+        }
+        KeyCode::Char(c) => Message::SpawnDirectoryInput(c),
         _ => Message::None,
     }
 }

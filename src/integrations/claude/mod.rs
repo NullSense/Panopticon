@@ -14,6 +14,7 @@ pub mod watcher;
 
 use crate::data::AgentSession;
 use anyhow::Result;
+use std::process::Command;
 
 /// Find all active Claude Code sessions
 pub async fn find_all_sessions() -> Result<Vec<AgentSession>> {
@@ -31,9 +32,25 @@ pub async fn find_session_for_directory(dir: Option<&str>) -> Option<AgentSessio
         .find(|s| s.working_directory.as_deref() == Some(dir))
 }
 
-/// Focus the terminal window for a Claude session (WSL + Windows)
+/// Focus the terminal window for a Claude session
+/// Uses tmux switch-client if running inside tmux, otherwise falls back to WSL/Windows
 pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
-    // Use PowerShell to focus the Alacritty window
+    // First, try to find if there's a tmux session for this working directory
+    if let Some(dir) = &session.working_directory {
+        // Check if we can find an issue session mapping
+        if let Some(session_name) = state::find_session_by_directory(dir) {
+            if tmux_session_exists(&session_name) {
+                return focus_tmux_session(&session_name);
+            }
+        }
+    }
+
+    // Try to switch to tmux session by session ID
+    if tmux_session_exists(&session.id) {
+        return focus_tmux_session(&session.id);
+    }
+
+    // Fallback: Use PowerShell to focus the Alacritty window (WSL + Windows)
     let search_term = session
         .working_directory
         .as_ref()
@@ -66,6 +83,127 @@ pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Failed to focus window: {}", stderr);
+    }
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// tmux integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Check if tmux is available on the system
+pub fn tmux_available() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if a tmux session with the given name exists
+pub fn tmux_session_exists(session_name: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", session_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Focus/switch to a tmux session
+pub fn focus_tmux_session(session_name: &str) -> Result<()> {
+    // Check if we're inside tmux
+    let inside_tmux = std::env::var("TMUX").is_ok();
+
+    if inside_tmux {
+        // Switch client to the target session
+        let output = Command::new("tmux")
+            .args(["switch-client", "-t", session_name])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to switch to tmux session: {}", stderr);
+        }
+    } else {
+        // Attach to the session (will fail if not in a terminal)
+        let output = Command::new("tmux")
+            .args(["attach-session", "-t", session_name])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to attach to tmux session: {}", stderr);
+        }
+    }
+
+    Ok(())
+}
+
+/// Spawn a Claude agent in a new tmux session
+pub async fn spawn_agent_session(
+    identifier: &str,
+    title: &str,
+    description: Option<&str>,
+    working_dir: &str,
+) -> Result<()> {
+    // Create the tmux session
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",                    // detached
+            "-s", identifier,        // session name
+            "-c", working_dir,       // working directory
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to create tmux session: {}", stderr);
+    }
+
+    // Start Claude in the session
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", identifier, "claude", "Enter"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to start claude: {}", stderr);
+    }
+
+    // Wait a moment for Claude to initialize
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+    // Build the initial prompt
+    let desc_text = description
+        .map(|d| {
+            // Truncate description to 2000 chars
+            let truncated: String = d.chars().take(2000).collect();
+            format!("\n\nDescription:\n{}", truncated)
+        })
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "You are working on Linear issue {}:\n\nTitle: {}{}\n\nPlease analyze the requirements and propose an implementation plan.",
+        identifier, title, desc_text
+    );
+
+    // Escape the prompt for tmux send-keys (handle special characters)
+    let escaped_prompt = prompt
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
+
+    // Send the prompt to Claude
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", identifier, &escaped_prompt, "Enter"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to send prompt to claude: {}", stderr);
     }
 
     Ok(())

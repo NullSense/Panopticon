@@ -21,10 +21,23 @@ pub struct ClaudeSessionState {
     pub last_active: i64, // Unix timestamp in seconds
 }
 
+/// Mapping between Linear issues and tmux sessions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueSessionMapping {
+    pub issue_identifier: String,
+    pub tmux_session_name: String,
+    pub working_directory: String,
+    pub created_at: i64,
+}
+
 /// Container for all Claude session states
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ClaudeState {
     pub sessions: HashMap<String, ClaudeSessionState>,
+    #[serde(default)]
+    pub issue_sessions: HashMap<String, IssueSessionMapping>,
+    #[serde(default)]
+    pub recent_directories: Vec<String>,
 }
 
 /// Get the path to the state file
@@ -145,4 +158,79 @@ pub fn sessions_from_state(state: &ClaudeState) -> Vec<AgentSession> {
             }
         })
         .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue-Session Mapping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Record a mapping between a Linear issue and a tmux session
+pub fn record_issue_session(
+    issue_identifier: &str,
+    tmux_session_name: &str,
+    working_directory: &str,
+) -> Result<()> {
+    let mut state = read_state().unwrap_or_default();
+    let now = Utc::now().timestamp();
+
+    state.issue_sessions.insert(
+        issue_identifier.to_string(),
+        IssueSessionMapping {
+            issue_identifier: issue_identifier.to_string(),
+            tmux_session_name: tmux_session_name.to_string(),
+            working_directory: working_directory.to_string(),
+            created_at: now,
+        },
+    );
+
+    // Clean up old mappings (older than 7 days)
+    let cutoff = now - (7 * 86400);
+    state.issue_sessions.retain(|_, m| m.created_at > cutoff);
+
+    write_state(&state)
+}
+
+/// Find a tmux session name by working directory
+pub fn find_session_by_directory(directory: &str) -> Option<String> {
+    let state = read_state().ok()?;
+    state
+        .issue_sessions
+        .values()
+        .find(|m| m.working_directory == directory)
+        .map(|m| m.tmux_session_name.clone())
+}
+
+/// Find a tmux session name by Linear issue identifier
+pub fn find_session_by_issue(issue_identifier: &str) -> Option<String> {
+    let state = read_state().ok()?;
+    state
+        .issue_sessions
+        .get(issue_identifier)
+        .map(|m| m.tmux_session_name.clone())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recent Directories
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Get list of recent directories
+pub fn get_recent_directories() -> Result<Vec<String>> {
+    let state = read_state()?;
+    Ok(state.recent_directories)
+}
+
+/// Save a directory to the recent list
+pub fn save_recent_directory(directory: &str) -> Result<()> {
+    let mut state = read_state().unwrap_or_default();
+
+    // Remove if already exists (to move to front)
+    state.recent_directories.retain(|d| d != directory);
+
+    // Add to front
+    state.recent_directories.insert(0, directory.to_string());
+
+    // Keep only the 10 most recent
+    state.recent_directories.truncate(10);
+
+    write_state(&state)
 }

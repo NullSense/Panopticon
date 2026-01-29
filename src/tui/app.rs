@@ -57,7 +57,7 @@ pub const COLUMN_NAMES: [&str; NUM_COLUMNS] = [
 
 /// Active modal state - only one modal can be active at a time
 /// This enum consolidates the previous 7 boolean modal flags
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ModalState {
     #[default]
     None,
@@ -67,6 +67,12 @@ pub enum ModalState {
     FilterMenu,
     Description,
     Resize,
+    SpawnAgent {
+        directory_input: String,
+        recent_directories: Vec<String>,
+        selected_dir_idx: Option<usize>,
+        error: Option<String>,
+    },
 }
 
 impl ModalState {
@@ -153,6 +159,27 @@ impl App {
 
     pub fn resize_mode(&self) -> bool {
         matches!(self.modal, ModalState::Resize)
+    }
+
+    pub fn show_spawn_modal(&self) -> bool {
+        matches!(self.modal, ModalState::SpawnAgent { .. })
+    }
+
+    pub fn spawn_modal_state(&self) -> Option<(&str, &[String], Option<usize>, Option<&str>)> {
+        match &self.modal {
+            ModalState::SpawnAgent {
+                directory_input,
+                recent_directories,
+                selected_dir_idx,
+                error,
+            } => Some((
+                directory_input.as_str(),
+                recent_directories.as_slice(),
+                *selected_dir_idx,
+                error.as_deref(),
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -383,6 +410,70 @@ impl App {
                     self.modal = ModalState::None;
                     self.clear_navigation();
                 }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // Spawn agent modal
+            // ─────────────────────────────────────────────────────────────────
+            Message::OpenSpawnAgentModal => self.open_spawn_modal(),
+            Message::CloseSpawnAgentModal => {
+                self.modal = ModalState::None;
+            }
+            Message::SpawnDirectoryInput(c) => {
+                if let ModalState::SpawnAgent { directory_input, selected_dir_idx, error, .. } = &mut self.modal {
+                    directory_input.push(c);
+                    *selected_dir_idx = None; // Clear selection when typing
+                    *error = None; // Clear error when typing
+                }
+            }
+            Message::SpawnDirectoryBackspace => {
+                if let ModalState::SpawnAgent { directory_input, error, .. } = &mut self.modal {
+                    directory_input.pop();
+                    *error = None;
+                }
+            }
+            Message::SpawnDirSelectUp => {
+                if let ModalState::SpawnAgent { recent_directories, selected_dir_idx, directory_input, .. } = &mut self.modal {
+                    if !recent_directories.is_empty() {
+                        *selected_dir_idx = Some(match *selected_dir_idx {
+                            None => 0,
+                            Some(0) => 0,
+                            Some(idx) => idx - 1,
+                        });
+                        if let Some(idx) = *selected_dir_idx {
+                            if let Some(dir) = recent_directories.get(idx) {
+                                *directory_input = dir.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            Message::SpawnDirSelectDown => {
+                if let ModalState::SpawnAgent { recent_directories, selected_dir_idx, directory_input, .. } = &mut self.modal {
+                    if !recent_directories.is_empty() {
+                        let max_idx = recent_directories.len() - 1;
+                        *selected_dir_idx = Some(match *selected_dir_idx {
+                            None => 0,
+                            Some(idx) if idx >= max_idx => max_idx,
+                            Some(idx) => idx + 1,
+                        });
+                        if let Some(idx) = *selected_dir_idx {
+                            if let Some(dir) = recent_directories.get(idx) {
+                                *directory_input = dir.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            Message::ClearSpawnDirectoryInput => {
+                if let ModalState::SpawnAgent { directory_input, selected_dir_idx, error, .. } = &mut self.modal {
+                    directory_input.clear();
+                    *selected_dir_idx = None;
+                    *error = None;
+                }
+            }
+            Message::ConfirmSpawnAgent => {
+                self.spawn_agent().await?;
             }
 
             // ─────────────────────────────────────────────────────────────────
@@ -1276,6 +1367,121 @@ impl App {
     #[allow(dead_code)]
     pub fn has_active_filters(&self) -> bool {
         !self.filter_cycles.is_empty() || !self.filter_priorities.is_empty()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Spawn agent modal
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Open the spawn agent modal
+    pub fn open_spawn_modal(&mut self) {
+        // Only open if we have a selected workstream
+        if self.selected_workstream().is_none() {
+            return;
+        }
+
+        // Get recent directories from state
+        let recent_directories = integrations::claude::state::get_recent_directories()
+            .unwrap_or_default();
+
+        self.modal = ModalState::SpawnAgent {
+            directory_input: String::new(),
+            recent_directories,
+            selected_dir_idx: None,
+            error: None,
+        };
+    }
+
+    /// Spawn a Claude agent in a tmux session for the selected issue
+    pub async fn spawn_agent(&mut self) -> Result<()> {
+        // Get the directory input and issue info
+        let (directory, identifier, title, description) = {
+            let ws = match self.selected_workstream() {
+                Some(ws) => ws,
+                None => {
+                    if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                        *error = Some("No issue selected".to_string());
+                    }
+                    return Ok(());
+                }
+            };
+
+            let dir = match &self.modal {
+                ModalState::SpawnAgent { directory_input, .. } => directory_input.clone(),
+                _ => return Ok(()),
+            };
+
+            (
+                dir,
+                ws.linear_issue.identifier.clone(),
+                ws.linear_issue.title.clone(),
+                ws.linear_issue.description.clone(),
+            )
+        };
+
+        // Validate directory
+        if directory.is_empty() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some("Directory cannot be empty".to_string());
+            }
+            return Ok(());
+        }
+
+        // Expand ~ to home directory
+        let expanded_dir = if directory.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&directory[2..]).to_string_lossy().to_string()
+            } else {
+                directory.clone()
+            }
+        } else {
+            directory.clone()
+        };
+
+        // Check if directory exists
+        if !std::path::Path::new(&expanded_dir).is_dir() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some(format!("Directory does not exist: {}", expanded_dir));
+            }
+            return Ok(());
+        }
+
+        // Check tmux availability
+        if !integrations::claude::tmux_available() {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some("tmux is not installed or not available".to_string());
+            }
+            return Ok(());
+        }
+
+        // Check if session already exists
+        if integrations::claude::tmux_session_exists(&identifier) {
+            if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                *error = Some(format!("Session '{}' already exists. Press 't' to teleport.", identifier));
+            }
+            return Ok(());
+        }
+
+        // Spawn the agent session
+        match integrations::claude::spawn_agent_session(&identifier, &title, description.as_deref(), &expanded_dir).await {
+            Ok(()) => {
+                // Save recent directory
+                let _ = integrations::claude::state::save_recent_directory(&expanded_dir);
+
+                // Record issue-session mapping
+                let _ = integrations::claude::state::record_issue_session(&identifier, &identifier, &expanded_dir);
+
+                // Close the modal on success
+                self.modal = ModalState::None;
+            }
+            Err(e) => {
+                if let ModalState::SpawnAgent { error, .. } = &mut self.modal {
+                    *error = Some(format!("Failed to spawn agent: {}", e));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -118,6 +118,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_description_modal() {
         draw_description_modal(f, app);
     }
+
+    if app.show_spawn_modal() {
+        draw_spawn_modal(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -1715,6 +1719,90 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .title(" 󰈲 Filter ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        );
+
+    f.render_widget(paragraph, area);
+}
+
+fn draw_spawn_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 50, f.area());
+
+    f.render_widget(Clear, area);
+
+    let active_style = Style::default().fg(Color::White);
+    let dim_style = Style::default().fg(Color::DarkGray);
+    let error_style = Style::default().fg(Color::Red);
+    let selected_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let input_style = Style::default().fg(Color::Yellow);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Get issue info
+    if let Some(ws) = app.selected_workstream() {
+        let issue = &ws.linear_issue;
+        lines.push(Line::from(vec![
+            Span::styled("  Spawn Claude agent for: ", dim_style),
+            Span::styled(&issue.identifier, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  ", dim_style),
+            Span::styled(truncate_str(&issue.title, 50), active_style),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // Get modal state
+    if let Some((directory_input, recent_directories, selected_dir_idx, error)) = app.spawn_modal_state() {
+        // Directory input
+        lines.push(Line::from(vec![
+            Span::styled("  Working Directory:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  > ", input_style),
+            Span::styled(directory_input, active_style),
+            Span::styled("█", input_style), // Cursor
+        ]));
+
+        // Error message if any
+        if let Some(err) = error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  ⚠ ", error_style),
+                Span::styled(err, error_style),
+            ]));
+        }
+
+        // Recent directories
+        if !recent_directories.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  Recent directories (↑/↓ to select):", dim_style),
+            ]));
+
+            for (idx, dir) in recent_directories.iter().take(5).enumerate() {
+                let is_selected = selected_dir_idx == Some(idx);
+                let style = if is_selected { selected_style } else { dim_style };
+                let marker = if is_selected { "▶ " } else { "  " };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}", marker), style),
+                    Span::styled(truncate_str(dir, 45), style),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Enter: spawn | Ctrl+u: clear | Esc: cancel", dim_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" 󰚩 Spawn Claude Agent ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Green)),
         );
