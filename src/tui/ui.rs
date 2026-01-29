@@ -1,4 +1,5 @@
 use super::App;
+use super::keybindings::{generate_footer_hints, generate_keyboard_shortcuts, Mode};
 use super::search::FuzzySearch;
 use crate::data::{AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SortMode, VercelStatus, VisualItem};
 use pulldown_cmark::{Event, Parser, Tag};
@@ -176,7 +177,6 @@ fn compute_column_layout(preferred: &[usize; NUM_COLUMNS], available_width: u16)
     }
     if remaining > 0 && visible[COL_IDX_TITLE] {
         widths[COL_IDX_TITLE] += remaining;
-        remaining = 0;
     }
 
     let visible_count = visible.iter().filter(|v| **v).count();
@@ -262,6 +262,114 @@ fn pad_to_width(text: &str, width: usize, alignment: Alignment) -> String {
             format!("{}{}{}", " ".repeat(left), trimmed, " ".repeat(right))
         }
     }
+}
+
+fn fit_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Line<'a> {
+    if max_width == 0 {
+        return Line::from(Vec::<Span>::new());
+    }
+
+    let Line { spans, alignment, style } = line;
+    let mut out: Vec<Span<'a>> = Vec::new();
+    let mut used = 0usize;
+
+    for span in spans {
+        if used >= max_width {
+            break;
+        }
+        let content = span.content.as_ref();
+        let span_width = display_width(content);
+        if used + span_width <= max_width {
+            used += span_width;
+            out.push(span);
+        } else {
+            let remaining = max_width.saturating_sub(used);
+            let truncated = truncate_to_width(content, remaining);
+            if !truncated.is_empty() {
+                out.push(Span::styled(truncated, span.style));
+            }
+            break;
+        }
+    }
+
+    Line { spans: out, alignment, style }
+}
+
+fn line_display_width<'a>(line: &Line<'a>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum()
+}
+
+fn pad_line_to_width<'a>(mut line: Line<'a>, width: usize) -> Line<'a> {
+    let current = line_display_width(&line);
+    if current < width {
+        line.spans.push(Span::raw(" ".repeat(width - current)));
+    }
+    line
+}
+
+fn ellipsis_line(width: u16) -> Line<'static> {
+    let text = pad_to_width("…", width as usize, Alignment::Center);
+    Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)))
+}
+
+fn fit_lines_to_area<'a>(lines: Vec<Line<'a>>, inner: Rect, keep_bottom: usize) -> Vec<Line<'a>> {
+    let width = inner.width as usize;
+    let height = inner.height as usize;
+    if height == 0 || width == 0 {
+        return Vec::new();
+    }
+
+    let mut fitted: Vec<Line<'a>> = lines
+        .into_iter()
+        .map(|line| fit_line_to_width(line, width))
+        .collect();
+
+    if fitted.len() <= height {
+        return fitted;
+    }
+
+    let keep_bottom = keep_bottom.min(height);
+    let top_space = height.saturating_sub(keep_bottom);
+    let mut out: Vec<Line<'a>> = Vec::with_capacity(height);
+
+    if top_space > 0 {
+        let top_take = if top_space > 1 { top_space - 1 } else { 0 };
+        if top_take > 0 {
+            out.extend(fitted.drain(..top_take));
+        }
+        out.push(ellipsis_line(inner.width));
+    }
+
+    if keep_bottom > 0 {
+        let start = fitted.len().saturating_sub(keep_bottom);
+        out.extend(fitted.drain(start..));
+    }
+
+    if out.is_empty() {
+        out.push(ellipsis_line(inner.width));
+    }
+
+    out
+}
+
+fn render_two_col_line<'a>(
+    left: Vec<Span<'a>>,
+    right: Vec<Span<'a>>,
+    left_width: usize,
+    total_width: usize,
+    sep_style: Style,
+) -> Line<'a> {
+    let left_line = pad_line_to_width(fit_line_to_width(Line::from(left), left_width), left_width);
+    let right_width = total_width.saturating_sub(left_width + SEP_WIDTH);
+    let right_line = fit_line_to_width(Line::from(right), right_width);
+
+    let mut spans = left_line.spans;
+    spans.push(Span::styled(SEP, sep_style));
+    spans.extend(right_line.spans);
+    Line::from(spans)
 }
 
 fn header_label(icon: &str, label: &str) -> String {
@@ -1104,7 +1212,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help_popup(f: &mut Frame, app: &App) {
-    let area = centered_rect(65, 80, f.area());
+    let area = popup_rect(65, 80, 40, 12, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1122,42 +1230,8 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
     ]);
 
     let content = if app.help_tab() == 0 {
-        // Keyboard shortcuts
-        vec![
-            "",
-            "  Navigation",
-            "  ──────────",
-            "  j/k, ↑/↓     Move up/down",
-            "  gg           Go to top",
-            "  G            Go to bottom",
-            "  Ctrl+d/u     Jump to next/prev section",
-            "  Ctrl+e/y     Scroll viewport (vim-style)",
-            "  h/←          Collapse section",
-            "  →            Expand section",
-            "  z            Toggle fold on current section",
-            "",
-            "  Search",
-            "  ──────",
-            "  /            Search active work",
-            "  Ctrl+/       Search all Linear issues",
-            "  j/k          Navigate through matches",
-            "  Enter        Confirm search",
-            "  Esc          Exit search mode",
-            "",
-            "  Actions",
-            "  ───────",
-            "  o, Enter     Open issue details",
-            "  l            Open links popup (Linear/GitHub/...)",
-            "  t            Teleport to Claude session",
-            "  p            Toggle preview panel",
-            "  s            Open sort menu",
-            "  f            Open filter menu",
-            "  r            Refresh data",
-            "",
-            "  q            Quit",
-            "  ?            Toggle this help",
-            "",
-        ]
+        // Keyboard shortcuts - generated from keybindings registry
+        generate_keyboard_shortcuts()
     } else {
         // Status legend - generated programmatically from config functions
         generate_status_legend()
@@ -1172,20 +1246,21 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
         Style::default().fg(Color::DarkGray),
     )));
 
+    let block = Block::default()
+        .title(" 󰋗 Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    let lines = fit_lines_to_area(lines, inner, 1);
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" 󰋗 Help ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
+        .block(block)
         .style(Style::default().fg(Color::White));
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_link_menu(f: &mut Frame, app: &App) {
-    let area = centered_rect(70, 75, f.area());
+    let area = popup_rect(70, 75, 50, 18, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1197,42 +1272,69 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
     // Search highlighting style
     let search_highlight_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let block = Block::default()
+        .title(" 󰌷 Issue Details ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+
+    struct TwoColRow {
+        left: Vec<Span<'static>>,
+        right: Vec<Span<'static>>,
+    }
+
+    enum IssueLine {
+        Plain(Line<'static>),
+        TwoCol(TwoColRow),
+    }
+
+    let span_width = |spans: &[Span<'static>]| -> usize {
+        spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum()
+    };
 
     let lines: Vec<Line> = if let Some(ws) = app.modal_issue() {
         let issue = &ws.linear_issue;
 
-        let mut lines = Vec::new();
+        let mut items: Vec<IssueLine> = Vec::new();
+        macro_rules! push_plain {
+            ($line:expr) => {
+                items.push(IssueLine::Plain($line));
+            };
+        }
 
         // Show search input if in search mode
         if app.modal_search_mode {
             let search_style = Style::default().fg(Color::Yellow);
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(vec![
                 Span::styled("  / ", search_style),
-                Span::styled(&app.modal_search_query, Style::default().fg(Color::White)),
+                Span::styled(app.modal_search_query.clone(), Style::default().fg(Color::White)),
                 Span::styled("█", Style::default().fg(Color::Yellow)), // Cursor
             ]));
-            lines.push(Line::from(""));
+            push_plain!(Line::from(""));
         } else if !app.modal_search_query.is_empty() {
             // Show active search filter
             let search_style = Style::default().fg(Color::Cyan);
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(vec![
                 Span::styled("  🔍 ", search_style),
                 Span::styled(format!("\"{}\"", &app.modal_search_query), search_highlight_style),
                 Span::styled(" (/ to edit, Esc to clear)", inactive_style),
             ]));
-            lines.push(Line::from(""));
+            push_plain!(Line::from(""));
         }
 
         // Show navigation breadcrumb if navigated
         if !app.issue_navigation_stack.is_empty() || app.modal_issue_id.is_some() {
             let nav_style = Style::default().fg(Color::DarkGray);
             let back_style = Style::default().fg(Color::Cyan);
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(vec![
                 Span::styled("  ", nav_style),
                 Span::styled("← Esc", back_style),
                 Span::styled(format!(" to go back ({} in history)", app.issue_navigation_stack.len()), nav_style),
             ]));
-            lines.push(Line::from(""));
+            push_plain!(Line::from(""));
         }
 
         // Search query for highlighting all fields
@@ -1247,40 +1349,60 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
         title_line.extend(highlight_search_matches(&issue.identifier, search_q, title_style));
         title_line.push(Span::styled(" ", title_style));
         title_line.extend(highlight_search_matches(&truncate_str(&issue.title, 50), search_q, active_style));
-        lines.push(Line::from(title_line));
-        lines.push(Line::from(""));
+        push_plain!(Line::from(title_line));
+        push_plain!(Line::from(""));
 
         // Status and Priority with icons
         let status_cfg = linear_status_config(issue.status);
         let priority_cfg = priority_config(issue.priority);
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", status_cfg.icon), status_cfg.style),
-            Span::styled("Status: ", label_style),
-            Span::styled(issue.status.display_name(), active_style),
-            Span::styled("  │  ", inactive_style),
-            Span::styled(format!("{} ", priority_cfg.icon), priority_cfg.style),
-            Span::styled(format!("Priority: {}", issue.priority.label()), active_style),
-        ]));
+        items.push(IssueLine::TwoCol(TwoColRow {
+            left: vec![
+                Span::styled(format!("  {} ", status_cfg.icon), status_cfg.style),
+                Span::styled("Status: ", label_style),
+                Span::styled(issue.status.display_name(), active_style),
+            ],
+            right: vec![
+                Span::styled(format!("{} ", priority_cfg.icon), priority_cfg.style),
+                Span::styled("Priority: ", label_style),
+                Span::styled(issue.priority.label(), active_style),
+            ],
+        }));
 
         // Team and Project with icons - with highlighting
         if issue.team.is_some() || issue.project.is_some() {
-            let mut spans = Vec::new();
-            if let Some(team) = &issue.team {
-                spans.push(Span::styled(format!("  {} ", icons::ICON_TEAM), label_style));
-                spans.push(Span::styled("Team: ", label_style));
-                spans.extend(highlight_search_matches(team, search_q, active_style));
-            }
-            if let Some(project) = &issue.project {
-                if issue.team.is_some() {
-                    spans.push(Span::styled("  │  ", inactive_style));
-                } else {
-                    spans.push(Span::styled("  ", label_style));
+            match (&issue.team, &issue.project) {
+                (Some(team), Some(project)) => {
+                    let mut left = vec![
+                        Span::styled(format!("  {} ", icons::ICON_TEAM), label_style),
+                        Span::styled("Team: ", label_style),
+                    ];
+                    left.extend(highlight_search_matches(team, search_q, active_style));
+                    let mut right = vec![
+                        Span::styled(format!("{} ", icons::ICON_PROJECT), label_style),
+                        Span::styled("Project: ", label_style),
+                    ];
+                    right.extend(highlight_search_matches(project, search_q, active_style));
+                    items.push(IssueLine::TwoCol(TwoColRow { left, right }));
                 }
-                spans.push(Span::styled(format!("{} ", icons::ICON_PROJECT), label_style));
-                spans.push(Span::styled("Project: ", label_style));
-                spans.extend(highlight_search_matches(project, search_q, active_style));
+                (Some(team), None) => {
+                    let mut spans = vec![
+                        Span::styled(format!("  {} ", icons::ICON_TEAM), label_style),
+                        Span::styled("Team: ", label_style),
+                    ];
+                    spans.extend(highlight_search_matches(team, search_q, active_style));
+                    push_plain!(Line::from(spans));
+                }
+                (None, Some(project)) => {
+                    let mut spans = vec![
+                        Span::styled("  ", label_style),
+                        Span::styled(format!("{} ", icons::ICON_PROJECT), label_style),
+                        Span::styled("Project: ", label_style),
+                    ];
+                    spans.extend(highlight_search_matches(project, search_q, active_style));
+                    push_plain!(Line::from(spans));
+                }
+                (None, None) => {}
             }
-            lines.push(Line::from(spans));
         }
 
         // Cycle with icon - with highlighting
@@ -1291,12 +1413,12 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             ];
             spans.extend(highlight_search_matches(&cycle.name, search_q, active_style));
             spans.push(Span::styled(format!(" ({})", cycle.number), active_style));
-            lines.push(Line::from(spans));
+            push_plain!(Line::from(spans));
         }
 
         // Estimate with icon
         if let Some(est) = issue.estimate {
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(vec![
                 Span::styled(format!("  {} ", icons::ICON_ESTIMATE), label_style),
                 Span::styled("Estimate: ", label_style),
                 Span::styled(format!("{} points", est), active_style),
@@ -1316,37 +1438,46 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 }
                 spans.extend(highlight_search_matches(&label.name, search_q, label_style_base));
             }
-            lines.push(Line::from(spans));
+            push_plain!(Line::from(spans));
         }
 
         // Dates with icons
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", icons::ICON_CREATED), inactive_style),
-            Span::styled("Created: ", label_style),
-            Span::styled(issue.created_at.format("%Y-%m-%d").to_string(), inactive_style),
-            Span::styled("  │  ", inactive_style),
-            Span::styled(format!("{} ", icons::ICON_UPDATED), inactive_style),
-            Span::styled("Updated: ", label_style),
-            Span::styled(issue.updated_at.format("%Y-%m-%d %H:%M").to_string(), inactive_style),
-        ]));
+        items.push(IssueLine::TwoCol(TwoColRow {
+            left: vec![
+                Span::styled(format!("  {} ", icons::ICON_CREATED), inactive_style),
+                Span::styled("Created: ", label_style),
+                Span::styled(issue.created_at.format("%Y-%m-%d").to_string(), inactive_style),
+            ],
+            right: vec![
+                Span::styled(format!("{} ", icons::ICON_UPDATED), inactive_style),
+                Span::styled("Updated: ", label_style),
+                Span::styled(issue.updated_at.format("%Y-%m-%d %H:%M").to_string(), inactive_style),
+            ],
+        }));
 
-        // Parent issue - with highlighting
+        // Parent issue - selectable with j/k, highlighted when selected
         if let Some(parent) = &issue.parent {
-            lines.push(Line::from(""));
+            push_plain!(Line::from(""));
+            let is_selected = app.parent_selected;
+            let row_style = if is_selected { selected_child_style } else { Style::default() };
+            let label_row_style = if is_selected { selected_child_style } else { label_style };
+            let id_style = if is_selected { selected_child_style } else { Style::default().fg(Color::Yellow) };
+            let title_style = if is_selected { selected_child_style } else { active_style };
+
             let mut parent_spans = vec![
-                Span::styled(format!("  {} ", icons::ICON_PARENT), Style::default().fg(Color::Blue)),
-                Span::styled("Parent: ", label_style),
+                Span::styled(if is_selected { " >> " } else { "  " }, row_style),
+                Span::styled(format!("{} ", icons::ICON_PARENT), if is_selected { row_style } else { Style::default().fg(Color::Blue) }),
+                Span::styled("Parent: ", label_row_style),
             ];
-            parent_spans.extend(highlight_search_matches(&parent.identifier, search_q, Style::default().fg(Color::Yellow)));
-            parent_spans.push(Span::styled(" ", Style::default()));
-            parent_spans.extend(highlight_search_matches(&truncate_str(&parent.title, 40), search_q, active_style));
-            parent_spans.push(Span::styled(" [p]", inactive_style));
-            lines.push(Line::from(parent_spans));
+            parent_spans.extend(highlight_search_matches(&parent.identifier, search_q, id_style));
+            parent_spans.push(Span::styled(" ", row_style));
+            parent_spans.extend(highlight_search_matches(&truncate_str(&parent.title, 40), search_q, title_style));
+            push_plain!(Line::from(parent_spans));
         }
 
         // Sub-issues (children) - with j/k navigation, scrolling, sort, and search filtering
         if !issue.children.is_empty() {
-            lines.push(Line::from(""));
+            push_plain!(Line::from(""));
 
             // Filter children based on modal search query (searches all fields)
             let filtered_children: Vec<&LinearChildRef> = if app.modal_search_query.is_empty() {
@@ -1372,7 +1503,8 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             // Sort filtered children according to current sort mode
             let sorted_children = sort_filtered_children(filtered_children, app.state.sort_mode);
             let total_children = sorted_children.len();
-            let visible_height: usize = 8;
+            let visible_height: usize = inner.height.saturating_sub(12) as usize;
+            let visible_height = visible_height.clamp(3, 10);
             let scroll = app.sub_issues_scroll;
 
             // Show header with count (filtered vs total)
@@ -1387,7 +1519,7 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             } else {
                 " (j/k to select)"
             };
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(vec![
                 Span::styled(format!("  {} ", icons::ICON_CHILDREN), Style::default().fg(Color::Green)),
                 Span::styled(count_text, label_style),
                 Span::styled(hint, inactive_style),
@@ -1395,14 +1527,14 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
             // Show "No matches" if filter returns empty
             if sorted_children.is_empty() && !app.modal_search_query.is_empty() {
-                lines.push(Line::from(vec![
+                push_plain!(Line::from(vec![
                     Span::styled("    ", inactive_style),
                     Span::styled("No matching sub-issues", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
                 ]));
             } else {
                 // Show scroll-up indicator if scrolled
                 if scroll > 0 {
-                    lines.push(Line::from(vec![
+                    push_plain!(Line::from(vec![
                         Span::styled("    ", inactive_style),
                         Span::styled(format!("↑ {} more above", scroll), Style::default().fg(Color::Cyan)),
                     ]));
@@ -1429,14 +1561,6 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                     let row_style = if is_selected { selected_child_style } else { Style::default() };
                     let id_style = if is_selected { selected_child_style } else { Style::default().fg(Color::Yellow) };
                     let title_row_style = if is_selected { selected_child_style } else { active_style };
-                    let key_style = if is_selected { selected_child_style } else { inactive_style };
-
-                    // Show shortcut only for first 9 visible items
-                    let shortcut = if display_i < 9 {
-                        format!(" [c{}]", display_i + 1)
-                    } else {
-                        String::new()
-                    };
 
                     // Build line with highlighted spans for identifier and title
                     let mut spans = vec![
@@ -1453,15 +1577,13 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                     let truncated_title = truncate_str(&child.title, 35);
                     spans.extend(highlight_search_matches(&truncated_title, search_query, title_row_style));
 
-                    spans.push(Span::styled(shortcut, key_style));
-
-                    lines.push(Line::from(spans));
+                    push_plain!(Line::from(spans));
                 }
 
                 // Show scroll-down indicator if more below
                 let visible_end = scroll + visible_height;
                 if visible_end < total_children {
-                    lines.push(Line::from(vec![
+                    push_plain!(Line::from(vec![
                         Span::styled("    ", inactive_style),
                         Span::styled(format!("↓ {} more below", total_children - visible_end), Style::default().fg(Color::Cyan)),
                     ]));
@@ -1471,8 +1593,8 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
         // Attachments (documents) - with highlighting
         if !issue.attachments.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(""));
+            push_plain!(Line::from(vec![
                 Span::styled(format!("  {} ", icons::ICON_DOCUMENT), label_style),
                 Span::styled(format!("Documents ({}):", issue.attachments.len()), label_style),
             ]));
@@ -1487,10 +1609,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 let mut att_spans = vec![Span::styled(format!("    {} ", source_icon), active_style)];
                 att_spans.extend(highlight_search_matches(&truncate_str(&attachment.title, 40), search_q, active_style));
                 att_spans.push(Span::styled(format!(" [d{}]", i + 1), inactive_style));
-                lines.push(Line::from(att_spans));
+                push_plain!(Line::from(att_spans));
             }
             if issue.attachments.len() > 5 {
-                lines.push(Line::from(Span::styled(
+                push_plain!(Line::from(Span::styled(
                     format!("    ... and {} more", issue.attachments.len() - 5),
                     inactive_style,
                 )));
@@ -1499,8 +1621,8 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
         // Description (truncated) - press 'd' for full view - with highlighting
         if let Some(desc) = &issue.description {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
+            push_plain!(Line::from(""));
+            push_plain!(Line::from(vec![
                 Span::styled(format!("  {} ", icons::ICON_DOCUMENT), label_style),
                 Span::styled("Description ", label_style),
                 Span::styled("[d] full view", inactive_style),
@@ -1509,36 +1631,65 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             let desc_clean = desc.replace('\n', " ").replace("  ", " ");
             for (i, chunk) in desc_clean.chars().collect::<Vec<_>>().chunks(58).enumerate() {
                 if i >= 3 {
-                    lines.push(Line::from(Span::styled("    ...", inactive_style)));
+                    push_plain!(Line::from(Span::styled("    ...", inactive_style)));
                     break;
                 }
                 let text: String = chunk.iter().collect();
                 let trimmed = text.trim();
                 let mut desc_spans = vec![Span::styled("    ", inactive_style)];
                 desc_spans.extend(highlight_search_matches(trimmed, search_q, inactive_style));
-                lines.push(Line::from(desc_spans));
+                push_plain!(Line::from(desc_spans));
             }
         }
 
-        // Footer hint
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  l: links | /: search | d: desc | c#: sub-issue | p: parent | Esc: back",
+        // Footer hint - generated from keybindings registry
+        push_plain!(Line::from(""));
+        push_plain!(Line::from(Span::styled(
+            generate_footer_hints(Mode::LinkMenu),
             inactive_style,
         )));
+
+        let total_width = inner.width as usize;
+        let mut left_max = 0usize;
+        for item in &items {
+            if let IssueLine::TwoCol(row) = item {
+                left_max = left_max.max(span_width(&row.left));
+            }
+        }
+        let min_right = 18usize.min(total_width);
+        let left_width_raw = if total_width > SEP_WIDTH + min_right {
+            left_max.min(total_width - SEP_WIDTH - min_right)
+        } else {
+            total_width.saturating_sub(SEP_WIDTH) / 2
+        };
+        let max_left = total_width.saturating_sub(SEP_WIDTH);
+        let left_width = if max_left < 8 {
+            max_left
+        } else {
+            left_width_raw.clamp(8, max_left)
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        for item in items {
+            match item {
+                IssueLine::Plain(line) => lines.push(line),
+                IssueLine::TwoCol(row) => lines.push(render_two_col_line(
+                    row.left,
+                    row.right,
+                    left_width,
+                    total_width,
+                    inactive_style,
+                )),
+            }
+        }
 
         lines
     } else {
         vec![Line::from(Span::styled("  No workstream selected", inactive_style))]
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" 󰌷 Issue Details ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
-        );
+    let lines = fit_lines_to_area(lines, inner, 1);
+    let paragraph = Paragraph::new(lines).block(block);
 
     f.render_widget(paragraph, area);
 }
@@ -1546,7 +1697,7 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 /// Draw the quick links popup (overlays issue details)
 fn draw_links_popup(f: &mut Frame, app: &App) {
     // Small centered popup
-    let area = centered_rect(40, 30, f.area());
+    let area = popup_rect(40, 30, 30, 8, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1599,19 +1750,19 @@ fn draw_links_popup(f: &mut Frame, app: &App) {
         vec![Line::from(Span::styled("  No issue", inactive_style))]
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" 󰌷 Open Links ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
+    let block = Block::default()
+        .title(" 󰌷 Open Links ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    let lines = fit_lines_to_area(lines, inner, 1);
+    let paragraph = Paragraph::new(lines).block(block);
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_description_modal(f: &mut Frame, app: &App) {
-    let area = centered_rect(80, 80, f.area());
+    let area = popup_rect(80, 80, 50, 12, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1619,6 +1770,15 @@ fn draw_description_modal(f: &mut Frame, app: &App) {
     let text_style = Style::default().fg(Color::White);
     let dim_style = Style::default().fg(Color::DarkGray);
 
+    let block = Block::default()
+        .title(" 󰈚 Description ")
+        .title_bottom(Line::from(" j/k: scroll | Esc: close ").centered())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    let content_width = inner.width.saturating_sub(2) as usize;
+
+    let mut scroll_line = app.description_scroll + 1;
     let lines: Vec<Line> = if let Some(ws) = app.selected_workstream() {
         let issue = &ws.linear_issue;
         let mut lines = vec![
@@ -1631,14 +1791,13 @@ fn draw_description_modal(f: &mut Frame, app: &App) {
 
         if let Some(desc) = &issue.description {
             // Parse markdown and convert to styled lines
-            let content_width = area.width.saturating_sub(6) as usize;
             let markdown_lines = parse_markdown_to_lines(desc, content_width);
 
             // Apply scroll offset
-            let visible_lines: Vec<Line> = markdown_lines
-                .into_iter()
-                .skip(app.description_scroll)
-                .collect();
+            let max_scroll = markdown_lines.len().saturating_sub(inner.height as usize);
+            let scroll = app.description_scroll.min(max_scroll);
+            scroll_line = scroll + 1;
+            let visible_lines: Vec<Line> = markdown_lines.into_iter().skip(scroll).collect();
 
             lines.extend(visible_lines);
         } else {
@@ -1650,17 +1809,12 @@ fn draw_description_modal(f: &mut Frame, app: &App) {
         vec![Line::from(Span::styled("  No workstream selected", dim_style))]
     };
 
-    let scroll_hint = format!("[line {}]", app.description_scroll + 1);
+    let scroll_hint = format!("[line {}]", scroll_line);
     let title = format!(" {} Description  {} ", icons::ICON_DOCUMENT, scroll_hint);
-
+    let block = block.title(title);
+    let lines = fit_lines_to_area(lines, inner, 0);
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(title)
-                .title_bottom(Line::from(" j/k: scroll | Esc: close ").centered())
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
+        .block(block)
         .wrap(ratatui::widgets::Wrap { trim: false });
 
     f.render_widget(paragraph, area);
@@ -1795,12 +1949,14 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
                 } else {
                     // Word wrap for regular text
                     let words: Vec<&str> = text_str.split_whitespace().collect();
-                    let mut current_line_len = current_spans.iter()
-                        .map(|s| s.content.len())
+                    let mut current_line_len = current_spans
+                        .iter()
+                        .map(|s| display_width(s.content.as_ref()))
                         .sum::<usize>();
 
                     for word in words {
-                        if current_line_len + word.len() + 1 > max_width && current_line_len > 0 {
+                        let word_width = display_width(word);
+                        if current_line_len + word_width + 1 > max_width && current_line_len > 0 {
                             flush_line(&mut current_spans, &mut lines, "  ");
                             current_line_len = 0;
                         }
@@ -1810,7 +1966,7 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
                             current_line_len += 1;
                         }
                         current_spans.push(Span::styled(word.to_string(), style));
-                        current_line_len += word.len();
+                        current_line_len += word_width;
                     }
                 }
             }
@@ -1858,17 +2014,23 @@ fn sort_filtered_children<'a>(
 
 /// Truncate a string to max length, adding ellipsis if needed
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(max_len - 3).collect::<String>())
+    if max_len == 0 {
+        return String::new();
     }
+    if display_width(s) <= max_len {
+        return s.to_string();
+    }
+    if max_len <= 3 {
+        return truncate_to_width(s, max_len);
+    }
+    let truncated = truncate_to_width(s, max_len.saturating_sub(3));
+    format!("{truncated}...")
 }
 
 fn draw_sort_menu(f: &mut Frame, app: &App) {
     use crate::data::SortMode;
 
-    let area = centered_rect(50, 45, f.area());
+    let area = popup_rect(50, 45, 34, 12, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1905,20 +2067,21 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  Press 1-6 to select | Esc: Cancel", dim_style)));
 
+    let block = Block::default()
+        .title(" 󰒺 Sort By ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = block.inner(area);
+    let lines = fit_lines_to_area(lines, inner, 1);
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" 󰒺 Sort By ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta)),
-        )
+        .block(block)
         .style(Style::default().fg(Color::White));
 
     f.render_widget(paragraph, area);
 }
 
 fn draw_filter_menu(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 60, f.area());
+    let area = popup_rect(50, 70, 38, 18, f.area());
 
     f.render_widget(Clear, area);
 
@@ -1976,6 +2139,23 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
 
+    // Status section
+    lines.push(Line::from(Span::styled("  STATUS", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+
+    let completed_marker = if app.show_completed { "[x]" } else { "[ ]" };
+    lines.push(Line::from(Span::styled(
+        format!("  [d] Show completed              {}", completed_marker),
+        if app.show_completed { active_style } else { dim_style }
+    )));
+
+    let canceled_marker = if app.show_canceled { "[x]" } else { "[ ]" };
+    lines.push(Line::from(Span::styled(
+        format!("  [x] Show canceled               {}", canceled_marker),
+        if app.show_canceled { active_style } else { dim_style }
+    )));
+
+    lines.push(Line::from(""));
+
     // Hierarchy section
     lines.push(Line::from(Span::styled("  HIERARCHY", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
 
@@ -1988,33 +2168,29 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  [a] All | [c] Clear | Esc: Close", dim_style)));
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" 󰈲 Filter ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
-        );
+    let block = Block::default()
+        .title(" 󰈲 Filter ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+    let inner = block.inner(area);
+    let lines = fit_lines_to_area(lines, inner, 1);
+    let paragraph = Paragraph::new(lines).block(block);
 
     f.render_widget(paragraph, area);
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
+fn popup_rect(percent_x: u16, percent_y: u16, min_width: u16, min_height: u16, r: Rect) -> Rect {
+    let max_width = r.width.saturating_sub(2).max(1);
+    let max_height = r.height.saturating_sub(2).max(1);
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
+    let target_width = (r.width.saturating_mul(percent_x) / 100).max(min_width);
+    let target_height = (r.height.saturating_mul(percent_y) / 100).max(min_height);
+
+    let width = target_width.min(max_width);
+    let height = target_height.min(max_height);
+
+    let x = r.x + (r.width.saturating_sub(width)) / 2;
+    let y = r.y + (r.height.saturating_sub(height)) / 2;
+
+    Rect { x, y, width, height }
 }
