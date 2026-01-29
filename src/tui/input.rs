@@ -112,9 +112,6 @@ pub fn dispatch_normal_mode(input: &mut InputState, key: KeyEvent) -> Message {
             Message::EnterSearch { search_all: true }
         }
         KeyCode::Char('/') => Message::EnterSearch { search_all: false },
-        // Search navigation (vim-style n/N for next/prev match)
-        KeyCode::Char('n') => Message::NextSearchMatch,
-        KeyCode::Char('N') => Message::PrevSearchMatch,
         // Actions
         KeyCode::Char('o') | KeyCode::Enter => Message::OpenLinkMenu, // Open issue details
         KeyCode::Char('l') => Message::OpenLinksPopup,                // Open links popup directly
@@ -343,6 +340,17 @@ fn handle_chord(app: &App, first: KeyCode, second: KeyCode) -> Message {
             }
         }
 
+        _ => Message::None,
+    }
+}
+
+/// Handle chord timeout - return fallback action for pending chord
+/// Called when a chord key was pressed but timed out without a second key
+pub fn handle_chord_timeout(app: &App, input: &InputState) -> Message {
+    match input.pending {
+        // 'd' alone in link menu -> open description
+        Some(KeyCode::Char('d')) if app.show_link_menu() => Message::OpenDescriptionModal,
+        // Other pending keys have no fallback action
         _ => Message::None,
     }
 }

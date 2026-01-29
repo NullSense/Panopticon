@@ -244,8 +244,6 @@ impl App {
                 self.state.search_query.pop();
                 self.update_search();
             }
-            Message::NextSearchMatch => self.next_search_match(),
-            Message::PrevSearchMatch => self.prev_search_match(),
 
             // ─────────────────────────────────────────────────────────────────
             // Modal toggles
@@ -853,46 +851,6 @@ impl App {
         }
     }
 
-    /// Jump to next search match (n key)
-    pub fn next_search_match(&mut self) {
-        if self.state.search_query.is_empty() || self.visual_items.is_empty() {
-            return;
-        }
-
-        let len = self.visual_items.len();
-        // Search forward from current position, wrapping around
-        for offset in 1..=len {
-            let idx = (self.visual_selected + offset) % len;
-            if self.is_search_match(idx) {
-                self.visual_selected = idx;
-                return;
-            }
-        }
-    }
-
-    /// Jump to previous search match (N key)
-    pub fn prev_search_match(&mut self) {
-        if self.state.search_query.is_empty() || self.visual_items.is_empty() {
-            return;
-        }
-
-        let len = self.visual_items.len();
-        // Search backward from current position, wrapping around
-        for offset in 1..=len {
-            let idx = (self.visual_selected + len - offset) % len;
-            if self.is_search_match(idx) {
-                self.visual_selected = idx;
-                return;
-            }
-        }
-    }
-
-    /// Check if a visual item at index is a workstream (for n/N navigation)
-    /// During search mode, all displayed workstreams are matches since we filter to matches only
-    fn is_search_match(&self, idx: usize) -> bool {
-        matches!(self.visual_items.get(idx), Some(VisualItem::Workstream(_)))
-    }
-
     /// Get the currently selected workstream
     pub fn selected_workstream(&self) -> Option<&Workstream> {
         match self.visual_items.get(self.visual_selected) {
@@ -1004,13 +962,6 @@ impl App {
             .workstreams
             .iter()
             .find(|ws| ws.linear_issue.identifier == identifier)
-    }
-
-    pub async fn open_primary_link(&self) -> Result<()> {
-        if let Some(ws) = self.selected_workstream() {
-            open_linear_url(&ws.linear_issue.url)?;
-        }
-        Ok(())
     }
 
     pub async fn open_linear_link(&self) -> Result<()> {

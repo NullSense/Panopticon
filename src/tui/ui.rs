@@ -1074,10 +1074,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         };
         Span::styled(text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
     } else if app.state.search_mode {
-        let text = if width >= 60 {
-            " Type to search | ↑/↓: nav | n/N: next/prev match | Enter: confirm | Esc: exit "
-        } else if width >= 40 {
-            " ↑/↓:nav n/N:match Enter Esc "
+        let text = if width >= 55 {
+            " Type to search | ↑/↓: navigate | Enter: confirm | Esc: exit "
+        } else if width >= 35 {
+            " ↑/↓:nav Enter:confirm Esc:exit "
         } else {
             " Search "
         };
@@ -1140,8 +1140,7 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
             "  ──────",
             "  /            Search active work",
             "  Ctrl+/       Search all Linear issues",
-            "  n            Next search match",
-            "  N            Previous search match",
+            "  j/k          Navigate through matches",
             "  Enter        Confirm search",
             "  Esc          Exit search mode",
             "",

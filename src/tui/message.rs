@@ -64,10 +64,6 @@ pub enum Message {
     SearchInput(char),
     /// Remove last character from search query
     SearchBackspace,
-    /// Jump to next search match (n key)
-    NextSearchMatch,
-    /// Jump to previous search match (N key)
-    PrevSearchMatch,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Modal toggles

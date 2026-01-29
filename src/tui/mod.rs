@@ -80,8 +80,13 @@ async fn run_app(
         }
 
         // Handle pending chord timeout (non-blocking)
+        // Dispatch fallback action for timed-out chords
         if input_state.has_timed_out() {
+            let fallback_msg = input::handle_chord_timeout(app, &input_state);
             input_state.clear();
+            if app.update(fallback_msg).await? {
+                return Ok(()); // Quit requested
+            }
         }
 
         if last_tick.elapsed() >= tick_rate {

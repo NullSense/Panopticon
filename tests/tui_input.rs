@@ -73,19 +73,6 @@ mod normal_mode {
     }
 
     #[test]
-    fn test_search_match_navigation() {
-        let mut input = InputState::new();
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('n'))),
-            Message::NextSearchMatch
-        );
-        assert_eq!(
-            dispatch_normal_mode(&mut input, key_event(KeyCode::Char('N'))),
-            Message::PrevSearchMatch
-        );
-    }
-
-    #[test]
     fn test_open_issue_details() {
         let mut input = InputState::new();
         // 'o' and Enter open issue details (link menu)
