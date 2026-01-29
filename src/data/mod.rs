@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A workstream represents a Linear issue and all its linked resources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,6 +457,101 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Get the sort key for a workstream based on current sort mode
+    fn workstream_sort_key(&self, ws: &Workstream) -> impl Ord {
+        match self.sort_mode {
+            SortMode::ByLinearStatus => {
+                // Default order - sort by issue identifier
+                (0u8, ws.linear_issue.identifier.clone(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByAgentStatus => {
+                let status = ws.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
+                (status, String::new(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByVercelStatus => {
+                let status = ws.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
+                (status, String::new(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByLastUpdated => {
+                // Negate timestamp for descending order (most recent first)
+                let ts = -ws.linear_issue.updated_at.timestamp();
+                (0u8, String::new(), ts, 0u8, 0u8)
+            }
+            SortMode::ByPriority => {
+                (ws.linear_issue.priority.sort_order(), String::new(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByPRActivity => {
+                let pr = ws.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
+                (0u8, String::new(), 0i64, pr, 0u8)
+            }
+        }
+    }
+
+    /// Hierarchically sort workstreams maintaining parent-child relationships.
+    /// Parents are sorted by the criteria, children appear directly under their parent
+    /// and are also sorted by the same criteria within their sibling group.
+    fn hierarchical_sort<'a>(&self, workstreams: &[&'a Workstream]) -> Vec<&'a Workstream> {
+        use std::collections::HashMap;
+
+        // Build parent_id -> children map
+        let mut children_of: HashMap<&str, Vec<&Workstream>> = HashMap::new();
+        let mut roots: Vec<&Workstream> = Vec::new();
+
+        // First pass: identify all issue IDs we have
+        let known_ids: std::collections::HashSet<&str> = workstreams
+            .iter()
+            .map(|ws| ws.linear_issue.id.as_str())
+            .collect();
+
+        // Second pass: categorize as root or child
+        for ws in workstreams {
+            if let Some(parent) = &ws.linear_issue.parent {
+                // Only treat as child if parent is in our list
+                if known_ids.contains(parent.id.as_str()) {
+                    children_of
+                        .entry(parent.id.as_str())
+                        .or_default()
+                        .push(ws);
+                } else {
+                    // Parent not in list (filtered out, different status, etc.) - treat as root
+                    roots.push(ws);
+                }
+            } else {
+                roots.push(ws);
+            }
+        }
+
+        // Sort roots by the current sort mode
+        roots.sort_by_key(|ws| self.workstream_sort_key(ws));
+
+        // Sort each children group
+        for children in children_of.values_mut() {
+            children.sort_by_key(|ws| self.workstream_sort_key(ws));
+        }
+
+        // Flatten via DFS (depth-first traversal)
+        let mut result = Vec::with_capacity(workstreams.len());
+
+        fn dfs<'a>(
+            ws: &'a Workstream,
+            children_of: &HashMap<&str, Vec<&'a Workstream>>,
+            result: &mut Vec<&'a Workstream>,
+        ) {
+            result.push(ws);
+            if let Some(children) = children_of.get(ws.linear_issue.id.as_str()) {
+                for child in children {
+                    dfs(child, children_of, result);
+                }
+            }
+        }
+
+        for root in roots {
+            dfs(root, &children_of, &mut result);
+        }
+
+        result
+    }
+
     pub fn grouped_workstreams(&self) -> Vec<(LinearStatus, Vec<&Workstream>)> {
         let mut groups: std::collections::HashMap<LinearStatus, Vec<&Workstream>> =
             std::collections::HashMap::new();
@@ -468,50 +563,9 @@ impl AppState {
                 .push(ws);
         }
 
-        // Sort within each group based on sort mode
+        // Apply hierarchical sort within each group
         for workstreams in groups.values_mut() {
-            match self.sort_mode {
-                SortMode::ByLinearStatus => {
-                    // Default order - sort by issue identifier
-                    workstreams.sort_by(|a, b| a.linear_issue.identifier.cmp(&b.linear_issue.identifier));
-                }
-                SortMode::ByAgentStatus => {
-                    // Sort by agent status (waiting first, then running, idle, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_status = a.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-                        let b_status = b.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-                        a_status.cmp(&b_status)
-                    });
-                }
-                SortMode::ByVercelStatus => {
-                    // Sort by vercel status (error first, then building, ready, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_status = a.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
-                        let b_status = b.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
-                        a_status.cmp(&b_status)
-                    });
-                }
-                SortMode::ByLastUpdated => {
-                    // Sort by Linear issue updated_at (most recent first)
-                    workstreams.sort_by(|a, b| {
-                        b.linear_issue.updated_at.cmp(&a.linear_issue.updated_at)
-                    });
-                }
-                SortMode::ByPriority => {
-                    // Sort by priority (urgent first)
-                    workstreams.sort_by(|a, b| {
-                        a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order())
-                    });
-                }
-                SortMode::ByPRActivity => {
-                    // Sort by PR status (changes requested first, then review, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_pr = a.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
-                        let b_pr = b.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
-                        a_pr.cmp(&b_pr)
-                    });
-                }
-            }
+            *workstreams = self.hierarchical_sort(workstreams);
         }
 
         let mut result: Vec<_> = groups.into_iter().collect();
@@ -525,6 +579,10 @@ impl AppState {
     /// When `preserve_order` is true (search mode), items are displayed in the
     /// order given by `filtered_indices` (by relevance score) without section headers.
     /// When false (normal mode), items are grouped by status with section headers.
+    ///
+    /// Time complexity: O(n) where n = number of workstreams
+    /// - Uses HashSet for O(1) filtered_indices membership check
+    /// - Uses HashMap for O(1) id→index lookup
     pub fn build_visual_items(&self, filtered_indices: &[usize], preserve_order: bool) -> Vec<VisualItem> {
         // In search mode, display results in score order (no grouping)
         if preserve_order && !filtered_indices.is_empty() {
@@ -533,6 +591,19 @@ impl AppState {
                 .map(|&idx| VisualItem::Workstream(idx))
                 .collect();
         }
+
+        // Convert filtered_indices to HashSet for O(1) membership check
+        // (previously O(m) linear search per workstream)
+        let filtered_set: HashSet<usize> = filtered_indices.iter().copied().collect();
+
+        // Build id→index map for O(1) lookup
+        // (previously O(n) linear search via position() per workstream)
+        let index_map: HashMap<&str, usize> = self
+            .workstreams
+            .iter()
+            .enumerate()
+            .map(|(idx, ws)| (ws.linear_issue.id.as_str(), idx))
+            .collect();
 
         // Normal mode: group by status with section headers
         let mut items = Vec::new();
@@ -549,9 +620,10 @@ impl AppState {
 
             // Add workstream items (only if in filtered list)
             for ws in workstreams {
-                // Find index in original workstreams vec
-                if let Some(idx) = self.workstreams.iter().position(|w| w.linear_issue.id == ws.linear_issue.id) {
-                    if filtered_indices.contains(&idx) {
+                // O(1) lookup via HashMap instead of O(n) position()
+                if let Some(&idx) = index_map.get(ws.linear_issue.id.as_str()) {
+                    // O(1) membership check via HashSet instead of O(m) contains()
+                    if filtered_set.contains(&idx) {
                         items.push(VisualItem::Workstream(idx));
                     }
                 }
