@@ -2,6 +2,14 @@
 //!
 //! Maps key events to messages based on current app mode.
 //! Handles key chords (gg, d1-d9, c1-c9) with non-blocking state machine.
+//!
+//! # Keybinding Conventions
+//!
+//! - **Esc and q**: Always close/go back in ALL modal views (except text input modes)
+//! - **Text input modes** (search, modal search): Only Esc works, q is text input
+//! - **Normal mode**: q quits the application
+//!
+//! When adding new modals, always include `KeyCode::Esc | KeyCode::Char('q')` for close.
 
 use super::{App, Message};
 use crate::data::SortMode;
@@ -181,7 +189,7 @@ fn dispatch_help_modal(key: KeyEvent) -> Message {
 /// Handle keys in resize mode.
 fn dispatch_resize_mode(key: KeyEvent) -> Message {
     match key.code {
-        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('R') => Message::ExitResizeMode,
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char('R') => Message::ExitResizeMode,
         KeyCode::Char('h') | KeyCode::Left => Message::ResizeColumnNarrower,
         KeyCode::Char('l') | KeyCode::Right => Message::ResizeColumnWider,
         KeyCode::Tab => Message::ResizeNextColumn,
@@ -193,7 +201,7 @@ fn dispatch_resize_mode(key: KeyEvent) -> Message {
 /// Handle keys in sort menu.
 fn dispatch_sort_menu(key: KeyEvent) -> Message {
     match key.code {
-        KeyCode::Esc => Message::CloseModal,
+        KeyCode::Esc | KeyCode::Char('q') => Message::CloseModal,
         KeyCode::Char(c) if ('1'..='6').contains(&c) => {
             let idx = c.to_digit(10).unwrap() as usize;
             if let Some(mode) = SortMode::from_index(idx) {
@@ -210,7 +218,7 @@ fn dispatch_sort_menu(key: KeyEvent) -> Message {
 fn dispatch_filter_menu(key: KeyEvent) -> Message {
     use crate::data::LinearPriority;
     match key.code {
-        KeyCode::Esc => Message::CloseModal,
+        KeyCode::Esc | KeyCode::Char('q') => Message::CloseModal,
         // Cycle filters (0-9)
         KeyCode::Char(c) if ('0'..='9').contains(&c) => {
             let idx = c.to_digit(10).unwrap() as usize;
@@ -282,7 +290,7 @@ fn dispatch_link_menu(app: &App, input: &mut InputState, key: KeyEvent) -> Messa
 /// Handle keys in links popup (nested within link menu).
 fn dispatch_links_popup(key: KeyEvent) -> Message {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('l') => Message::CloseLinksPopup,
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('l') => Message::CloseLinksPopup,
         KeyCode::Char('1') => Message::OpenLinearLink,
         KeyCode::Char('2') => Message::OpenGithubLink,
         KeyCode::Char('3') => Message::OpenVercelLink,
