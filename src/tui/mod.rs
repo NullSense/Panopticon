@@ -74,6 +74,30 @@ async fn run_app(
                         }
                         _ => {}
                     }
+                } else if app.show_link_menu {
+                    // Handle link menu key presses
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.show_link_menu = false;
+                        }
+                        KeyCode::Char('1') => {
+                            app.open_linear_link().await?;
+                            app.show_link_menu = false;
+                        }
+                        KeyCode::Char('2') => {
+                            app.open_github_link().await?;
+                            app.show_link_menu = false;
+                        }
+                        KeyCode::Char('3') => {
+                            app.open_vercel_link().await?;
+                            app.show_link_menu = false;
+                        }
+                        KeyCode::Char('4') => {
+                            app.teleport_to_session().await?;
+                            app.show_link_menu = false;
+                        }
+                        _ => {}
+                    }
                 } else {
                     match key.code {
                         KeyCode::Char('q') => {
@@ -127,6 +151,17 @@ async fn run_app(
                         }
                         KeyCode::Char('?') => {
                             app.toggle_help();
+                        }
+                        // Section collapse/expand
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            app.collapse_current_section();
+                        }
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            app.expand_current_section();
+                        }
+                        // Sorting
+                        KeyCode::Char('s') => {
+                            app.cycle_sort_mode();
                         }
                         _ => {}
                     }

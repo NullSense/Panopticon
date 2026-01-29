@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// A workstream represents a Linear issue and all its linked resources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +189,33 @@ impl AgentStatus {
     }
 }
 
+/// Sort mode for workstreams
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    #[default]
+    ByStatus,
+    ByElapsedTime,
+    ByPRActivity,
+}
+
+impl SortMode {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::ByStatus => Self::ByElapsedTime,
+            Self::ByElapsedTime => Self::ByPRActivity,
+            Self::ByPRActivity => Self::ByStatus,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ByStatus => "Status",
+            Self::ByElapsedTime => "Elapsed",
+            Self::ByPRActivity => "PR Activity",
+        }
+    }
+}
+
 /// Application state
 #[derive(Debug, Default)]
 pub struct AppState {
@@ -196,6 +224,8 @@ pub struct AppState {
     pub search_mode: bool,
     pub selected_index: usize,
     pub last_refresh: Option<DateTime<Utc>>,
+    pub collapsed_sections: HashSet<LinearStatus>,
+    pub sort_mode: SortMode,
 }
 
 impl AppState {
@@ -210,8 +240,46 @@ impl AppState {
                 .push(ws);
         }
 
+        // Sort within each group based on sort mode
+        for workstreams in groups.values_mut() {
+            match self.sort_mode {
+                SortMode::ByStatus => {
+                    // Default order - sort by issue identifier
+                    workstreams.sort_by(|a, b| a.linear_issue.identifier.cmp(&b.linear_issue.identifier));
+                }
+                SortMode::ByElapsedTime => {
+                    // Sort by agent session start time (most recent first)
+                    workstreams.sort_by(|a, b| {
+                        let a_time = a.agent_session.as_ref().map(|s| s.started_at);
+                        let b_time = b.agent_session.as_ref().map(|s| s.started_at);
+                        b_time.cmp(&a_time) // Reverse for most recent first
+                    });
+                }
+                SortMode::ByPRActivity => {
+                    // Sort by PR status (merged first, then approved, etc.)
+                    workstreams.sort_by(|a, b| {
+                        let a_pr = a.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
+                        let b_pr = b.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
+                        a_pr.cmp(&b_pr)
+                    });
+                }
+            }
+        }
+
         let mut result: Vec<_> = groups.into_iter().collect();
         result.sort_by_key(|(status, _)| status.sort_order());
         result
+    }
+}
+
+fn pr_sort_order(status: GitHubPRStatus) -> u8 {
+    match status {
+        GitHubPRStatus::Merged => 0,
+        GitHubPRStatus::Approved => 1,
+        GitHubPRStatus::ChangesRequested => 2,
+        GitHubPRStatus::ReviewRequested => 3,
+        GitHubPRStatus::Open => 4,
+        GitHubPRStatus::Draft => 5,
+        GitHubPRStatus::Closed => 6,
     }
 }

@@ -143,6 +143,31 @@ impl App {
         Ok(())
     }
 
+    pub async fn open_linear_link(&self) -> Result<()> {
+        if let Some(ws) = self.selected_workstream() {
+            open_url(&ws.linear_issue.url)?;
+        }
+        Ok(())
+    }
+
+    pub async fn open_github_link(&self) -> Result<()> {
+        if let Some(ws) = self.selected_workstream() {
+            if let Some(pr) = &ws.github_pr {
+                open_url(&pr.url)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn open_vercel_link(&self) -> Result<()> {
+        if let Some(ws) = self.selected_workstream() {
+            if let Some(deploy) = &ws.vercel_deployment {
+                open_url(&deploy.url)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn open_link_menu(&mut self) {
         self.show_link_menu = !self.show_link_menu;
     }
@@ -162,6 +187,28 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    // Section collapse/expand
+    pub fn collapse_current_section(&mut self) {
+        if let Some(status) = self.current_section_status() {
+            self.state.collapsed_sections.insert(status);
+        }
+    }
+
+    pub fn expand_current_section(&mut self) {
+        if let Some(status) = self.current_section_status() {
+            self.state.collapsed_sections.remove(&status);
+        }
+    }
+
+    fn current_section_status(&self) -> Option<crate::data::LinearStatus> {
+        self.selected_workstream().map(|ws| ws.linear_issue.status)
+    }
+
+    // Sorting
+    pub fn cycle_sort_mode(&mut self) {
+        self.state.sort_mode = self.state.sort_mode.next();
     }
 }
 

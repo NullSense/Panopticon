@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod clawdbot;
 pub mod github;
 pub mod linear;
 pub mod vercel;
@@ -30,7 +31,8 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             None
         };
 
-        let agent = claude::find_session_for_directory(issue.working_directory.as_deref()).await;
+        // Try to find agent session - check Claude first, then Clawdbot
+        let agent = find_agent_session(issue.working_directory.as_deref()).await;
 
         workstreams.push(Workstream {
             linear_issue: issue.issue,
@@ -41,6 +43,17 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
     }
 
     Ok(workstreams)
+}
+
+/// Find an agent session for a working directory, checking both Claude and Clawdbot
+async fn find_agent_session(dir: Option<&str>) -> Option<crate::data::AgentSession> {
+    // Try Claude Code first
+    if let Some(session) = claude::find_session_for_directory(dir).await {
+        return Some(session);
+    }
+
+    // Fall back to Clawdbot
+    clawdbot::find_session_for_directory(dir).await
 }
 
 /// Intermediate struct for Linear issues with extra linking info
