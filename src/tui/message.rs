@@ -102,6 +102,10 @@ pub enum Message {
     TogglePriorityFilter(LinearPriority),
     /// Toggle showing sub-issues
     ToggleSubIssues,
+    /// Toggle showing completed issues
+    ToggleCompletedFilter,
+    /// Toggle showing canceled issues
+    ToggleCanceledFilter,
     /// Clear all filters (show all)
     ClearAllFilters,
     /// Select all filters

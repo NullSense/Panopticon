@@ -1,5 +1,6 @@
 mod app;
 pub mod input;
+pub mod keybindings;
 mod message;
 pub mod search;
 mod ui;
@@ -60,6 +61,16 @@ async fn run_app(
     let mut input_state = input::InputState::new();
 
     loop {
+        // Update dynamic visible height for sub-issues based on terminal size
+        // This must match the calculation in ui.rs for rendering consistency
+        if let Ok(size) = terminal.size() {
+            // Modal inner height is approximately: total_height - borders(2) - other_ui_elements(~10)
+            // Sub-issues visible height is: inner_height.saturating_sub(12).clamp(3, 10)
+            // Simplified: (height - 12 - 12).clamp(3, 10) = (height - 24).clamp(3, 10)
+            let visible_height = (size.height.saturating_sub(24) as usize).clamp(3, 10);
+            app.set_sub_issues_visible_height(visible_height);
+        }
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -67,7 +78,7 @@ async fn run_app(
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Resize(_width, _height) => {
-                    // Layout is computed per draw based on current frame size.
+                    // Layout is updated on next draw iteration via terminal.size()
                 }
                 Event::Key(key) => {
                     let msg = input::dispatch(app, &mut input_state, key);
