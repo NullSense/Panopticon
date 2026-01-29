@@ -1,4 +1,5 @@
 mod app;
+pub mod search;
 mod ui;
 
 use crate::config::Config;
@@ -12,7 +13,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
 
-pub use app::App;
+pub use app::{App, RefreshProgress, RefreshResult};
 
 pub async fn run(config: Config) -> Result<()> {
     // Check if stdout is a terminal
@@ -30,8 +31,8 @@ pub async fn run(config: Config) -> Result<()> {
     // Create app state
     let mut app = App::new(config);
 
-    // Initial data fetch
-    app.refresh().await?;
+    // Initial data fetch (non-blocking - UI shows immediately with loading state)
+    app.start_background_refresh();
 
     let result = run_app(&mut terminal, &mut app).await;
 
@@ -60,7 +61,11 @@ async fn run_app(
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
+            Event::Resize(width, _height) => {
+                app.recalculate_column_widths(width);
+            }
+            Event::Key(key) => {
                 if app.state.search_mode {
                     match key.code {
                         KeyCode::Esc => {
@@ -76,6 +81,39 @@ async fn run_app(
                         KeyCode::Char(c) => {
                             app.state.search_query.push(c);
                             app.update_search();
+                        }
+                        _ => {}
+                    }
+                } else if app.show_description_modal {
+                    // Handle description modal key presses
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            app.close_description_modal();
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            app.scroll_description(1);
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            app.scroll_description(-1);
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.scroll_description(10);
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.scroll_description(-10);
+                        }
+                        KeyCode::Char('G') => {
+                            app.scroll_description(1000); // Jump to bottom
+                        }
+                        KeyCode::Char('g') => {
+                            // gg to go to top
+                            if event::poll(Duration::from_millis(500))? {
+                                if let Event::Key(k) = event::read()? {
+                                    if k.code == KeyCode::Char('g') {
+                                        app.description_scroll = 0;
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -129,28 +167,154 @@ async fn run_app(
                         _ => {}
                     }
                 } else if app.show_link_menu {
-                    // Handle link menu key presses
-                    match key.code {
-                        KeyCode::Esc => {
-                            app.show_link_menu = false;
+                    // Handle links popup first (nested modal)
+                    if app.show_links_popup {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('l') => {
+                                app.show_links_popup = false;
+                            }
+                            KeyCode::Char('1') => {
+                                app.open_linear_link().await?;
+                                app.show_links_popup = false;
+                                app.show_link_menu = false;
+                                app.clear_navigation();
+                            }
+                            KeyCode::Char('2') => {
+                                app.open_github_link().await?;
+                                app.show_links_popup = false;
+                                app.show_link_menu = false;
+                                app.clear_navigation();
+                            }
+                            KeyCode::Char('3') => {
+                                app.open_vercel_link().await?;
+                                app.show_links_popup = false;
+                                app.show_link_menu = false;
+                                app.clear_navigation();
+                            }
+                            KeyCode::Char('4') => {
+                                app.teleport_to_session().await?;
+                                app.show_links_popup = false;
+                                app.show_link_menu = false;
+                                app.clear_navigation();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('1') => {
-                            app.open_linear_link().await?;
-                            app.show_link_menu = false;
+                    } else if app.modal_search_mode {
+                        // Handle modal search mode
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.exit_modal_search();
+                            }
+                            KeyCode::Enter => {
+                                app.exit_modal_search();
+                            }
+                            KeyCode::Backspace => {
+                                app.modal_search_query.pop();
+                            }
+                            KeyCode::Char(c) => {
+                                app.modal_search_query.push(c);
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('2') => {
-                            app.open_github_link().await?;
-                            app.show_link_menu = false;
+                    } else {
+                        // Handle issue details modal key presses
+                        match key.code {
+                            KeyCode::Esc => {
+                                // Clear search first if active
+                                if !app.modal_search_query.is_empty() {
+                                    app.clear_modal_search();
+                                } else if !app.navigate_back() {
+                                    // Stack empty, close the menu
+                                    app.show_link_menu = false;
+                                    app.clear_navigation();
+                                }
+                            }
+                            // Search in modal
+                            KeyCode::Char('/') => {
+                                app.enter_modal_search();
+                            }
+                            // Open links popup
+                            KeyCode::Char('l') => {
+                                app.show_links_popup = true;
+                            }
+                            // j/k navigation for sub-issues
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                app.next_child_issue();
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                app.prev_child_issue();
+                            }
+                            // Enter on selected sub-issue: navigate in modal if available, else browser
+                            KeyCode::Enter => {
+                                if app.selected_child_idx.is_some() {
+                                    if !app.navigate_to_selected_child() {
+                                        // Child not in workstreams, open in browser
+                                        app.open_selected_child_issue()?;
+                                        app.show_link_menu = false;
+                                        app.clear_navigation();
+                                    }
+                                    // If navigated, stay in modal (don't close)
+                                }
+                            }
+                            // Open parent issue: navigate in modal if available, else browser
+                            KeyCode::Char('p') => {
+                                if !app.navigate_to_parent() {
+                                    // Parent not in workstreams, open in browser
+                                    app.open_parent_issue()?;
+                                    app.show_link_menu = false;
+                                    app.clear_navigation();
+                                }
+                                // If navigated, stay in modal (don't close)
+                            }
+                            // Document shortcuts: d + number, or d alone for full description
+                            KeyCode::Char('d') => {
+                                // Wait for digit or open description if timeout
+                                if event::poll(Duration::from_millis(500))? {
+                                    if let Event::Key(k) = event::read()? {
+                                        if let KeyCode::Char(c) = k.code {
+                                            if let Some(digit) = c.to_digit(10) {
+                                                if digit >= 1 && digit <= 9 {
+                                                    app.open_document((digit - 1) as usize)?;
+                                                    app.show_link_menu = false;
+                                                    app.clear_navigation();
+                                                }
+                                            } else {
+                                                // Not a digit, open description modal
+                                                app.open_description_modal();
+                                            }
+                                        } else {
+                                            // Not a char key, open description modal
+                                            app.open_description_modal();
+                                        }
+                                    }
+                                } else {
+                                    // Timeout, open description modal
+                                    app.open_description_modal();
+                                }
+                            }
+                            // Child issue shortcuts: c + number - navigate in modal if available
+                            KeyCode::Char('c') => {
+                                // Wait for digit
+                                if event::poll(Duration::from_millis(500))? {
+                                    if let Event::Key(k) = event::read()? {
+                                        if let KeyCode::Char(c) = k.code {
+                                            if let Some(digit) = c.to_digit(10) {
+                                                if digit >= 1 && digit <= 9 {
+                                                    let idx = (digit - 1) as usize;
+                                                    if !app.navigate_to_child(idx) {
+                                                        // Child not in workstreams, open in browser
+                                                        app.open_child_issue(idx)?;
+                                                        app.show_link_menu = false;
+                                                        app.clear_navigation();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('3') => {
-                            app.open_vercel_link().await?;
-                            app.show_link_menu = false;
-                        }
-                        KeyCode::Char('4') => {
-                            app.teleport_to_session().await?;
-                            app.show_link_menu = false;
-                        }
-                        _ => {}
                     }
                 } else if app.show_filter_menu {
                     // Handle filter menu key presses
@@ -179,6 +343,10 @@ async fn run_app(
                         }
                         KeyCode::Char('n') => {
                             app.toggle_priority_filter(LinearPriority::NoPriority);
+                        }
+                        // Toggle sub-issues visibility
+                        KeyCode::Char('t') => {
+                            app.toggle_sub_issues();
                         }
                         // Select all / clear all
                         KeyCode::Char('a') => {
@@ -238,7 +406,8 @@ async fn run_app(
                             app.toggle_preview();
                         }
                         KeyCode::Char('r') => {
-                            app.refresh().await?;
+                            // Start non-blocking background refresh
+                            app.start_background_refresh();
                         }
                         KeyCode::Char('?') => {
                             app.toggle_help();
@@ -266,10 +435,16 @@ async fn run_app(
                     }
                 }
             }
+            _ => {}
+            }
         }
 
         if last_tick.elapsed() >= tick_rate {
             app.on_tick().await;
+
+            // Poll for background refresh results (non-blocking)
+            app.poll_refresh();
+
             last_tick = std::time::Instant::now();
         }
     }

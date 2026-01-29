@@ -1,5 +1,8 @@
 use crate::config::Config;
-use crate::data::{LinearCycle, LinearIssue, LinearPriority, LinearStatus};
+use crate::data::{
+    LinearAttachment, LinearChildRef, LinearCycle, LinearIssue, LinearLabel,
+    LinearParentRef, LinearPriority, LinearStatus,
+};
 use crate::integrations::LinkedLinearIssue;
 use anyhow::Result;
 use chrono::Utc;
@@ -21,7 +24,9 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
                         description
                         url
                         updatedAt
+                        createdAt
                         priority
+                        estimate
                         state {
                             name
                             type
@@ -33,10 +38,45 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
                             startsAt
                             endsAt
                         }
+                        labels {
+                            nodes {
+                                name
+                                color
+                            }
+                        }
+                        project {
+                            name
+                        }
+                        team {
+                            name
+                            key
+                        }
                         attachments {
                             nodes {
+                                id
                                 url
                                 title
+                                subtitle
+                                sourceType
+                            }
+                        }
+                        parent {
+                            id
+                            identifier
+                            title
+                            url
+                        }
+                        children {
+                            nodes {
+                                id
+                                identifier
+                                title
+                                url
+                                priority
+                                state {
+                                    name
+                                    type
+                                }
                             }
                         }
                         branchName
@@ -68,20 +108,29 @@ pub async fn fetch_assigned_issues(config: &Config) -> Result<Vec<LinkedLinearIs
 
 fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
     let state_type = node["state"]["type"].as_str()?;
+    let state_name = node["state"]["name"].as_str().unwrap_or("").to_lowercase();
     let status = match state_type {
+        "triage" => LinearStatus::Triage,
         "backlog" => LinearStatus::Backlog,
         "unstarted" => LinearStatus::Todo,
         "started" => LinearStatus::InProgress,
         "completed" => LinearStatus::Done,
-        "canceled" => LinearStatus::Canceled,
+        "canceled" => {
+            // Check if it's a duplicate (often marked as canceled with "duplicate" in name)
+            if state_name.contains("duplicate") {
+                LinearStatus::Duplicate
+            } else {
+                LinearStatus::Canceled
+            }
+        }
         _ => {
-            // Check state name for "review" states
-            if node["state"]["name"]
-                .as_str()
-                .map(|s| s.to_lowercase().contains("review"))
-                .unwrap_or(false)
-            {
+            // Check state name for special statuses
+            if state_name.contains("review") {
                 LinearStatus::InReview
+            } else if state_name.contains("duplicate") {
+                LinearStatus::Duplicate
+            } else if state_name.contains("triage") {
+                LinearStatus::Triage
             } else {
                 LinearStatus::InProgress
             }
@@ -111,8 +160,8 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
     // Parse cycle if present
     let cycle = if node["cycle"].is_object() {
         let c = &node["cycle"];
-        Some(LinearCycle {
-            id: c["id"].as_str()?.to_string(),
+        c["id"].as_str().map(|id| LinearCycle {
+            id: id.to_string(),
             name: c["name"].as_str().unwrap_or("Unnamed").to_string(),
             number: c["number"].as_i64().unwrap_or(0) as i32,
             starts_at: c["startsAt"]
@@ -128,6 +177,120 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
         None
     };
 
+    // Parse labels
+    let labels = node["labels"]["nodes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| {
+                    Some(LinearLabel {
+                        name: l["name"].as_str()?.to_string(),
+                        color: l["color"].as_str().unwrap_or("#888888").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse project name
+    let project = node["project"]["name"].as_str().map(String::from);
+
+    // Parse team name
+    let team = node["team"]["name"].as_str().map(String::from);
+
+    // Parse estimate
+    let estimate = node["estimate"].as_f64().map(|e| e as f32);
+
+    // Parse attachments (filter out GitHub PR links)
+    let attachments = node["attachments"]["nodes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let url = a["url"].as_str()?;
+                    // Skip GitHub PR attachments (we handle those separately)
+                    if url.contains("github.com") && url.contains("/pull/") {
+                        return None;
+                    }
+                    Some(LinearAttachment {
+                        id: a["id"].as_str().unwrap_or("").to_string(),
+                        url: url.to_string(),
+                        title: a["title"].as_str().unwrap_or("Untitled").to_string(),
+                        subtitle: a["subtitle"].as_str().map(String::from),
+                        source_type: a["sourceType"].as_str().map(String::from),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse parent issue
+    let parent = if node["parent"].is_object() {
+        let p = &node["parent"];
+        match (p["id"].as_str(), p["identifier"].as_str()) {
+            (Some(id), Some(identifier)) => Some(LinearParentRef {
+                id: id.to_string(),
+                identifier: identifier.to_string(),
+                title: p["title"].as_str().unwrap_or("").to_string(),
+                url: p["url"].as_str().unwrap_or("").to_string(),
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Parse children (sub-issues)
+    let children = node["children"]["nodes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let child_state_type = c["state"]["type"].as_str()?;
+                    let child_state_name = c["state"]["name"].as_str().unwrap_or("").to_lowercase();
+                    let child_status = match child_state_type {
+                        "triage" => LinearStatus::Triage,
+                        "backlog" => LinearStatus::Backlog,
+                        "unstarted" => LinearStatus::Todo,
+                        "started" => LinearStatus::InProgress,
+                        "completed" => LinearStatus::Done,
+                        "canceled" => {
+                            if child_state_name.contains("duplicate") {
+                                LinearStatus::Duplicate
+                            } else {
+                                LinearStatus::Canceled
+                            }
+                        }
+                        _ => {
+                            if child_state_name.contains("review") {
+                                LinearStatus::InReview
+                            } else if child_state_name.contains("duplicate") {
+                                LinearStatus::Duplicate
+                            } else if child_state_name.contains("triage") {
+                                LinearStatus::Triage
+                            } else {
+                                LinearStatus::InProgress
+                            }
+                        }
+                    };
+                    let child_priority = c["priority"]
+                        .as_i64()
+                        .map(LinearPriority::from_int)
+                        .unwrap_or_default();
+
+                    Some(LinearChildRef {
+                        id: c["id"].as_str()?.to_string(),
+                        identifier: c["identifier"].as_str()?.to_string(),
+                        title: c["title"].as_str().unwrap_or("").to_string(),
+                        url: c["url"].as_str().unwrap_or("").to_string(),
+                        status: child_status,
+                        priority: child_priority,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let issue = LinearIssue {
         id: node["id"].as_str()?.to_string(),
         identifier: node["identifier"].as_str()?.to_string(),
@@ -136,11 +299,22 @@ fn parse_linear_issue(node: &serde_json::Value) -> Option<LinkedLinearIssue> {
         status,
         priority,
         url: node["url"].as_str()?.to_string(),
+        created_at: node["createdAt"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(Utc::now),
         updated_at: node["updatedAt"]
             .as_str()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(Utc::now),
         cycle,
+        labels,
+        project,
+        team,
+        estimate,
+        attachments,
+        parent,
+        children,
     };
 
     Some(LinkedLinearIssue {
@@ -164,8 +338,10 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                     title
                     description
                     url
+                    createdAt
                     updatedAt
                     priority
+                    estimate
                     state {
                         name
                         type
@@ -176,6 +352,18 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                         number
                         startsAt
                         endsAt
+                    }
+                    labels {
+                        nodes {
+                            name
+                            color
+                        }
+                    }
+                    project {
+                        name
+                    }
+                    team {
+                        name
                     }
                 }
             }
@@ -201,13 +389,31 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
         .iter()
         .filter_map(|node| {
             let state_type = node["state"]["type"].as_str()?;
+            let state_name = node["state"]["name"].as_str().unwrap_or("").to_lowercase();
             let status = match state_type {
+                "triage" => LinearStatus::Triage,
                 "backlog" => LinearStatus::Backlog,
                 "unstarted" => LinearStatus::Todo,
                 "started" => LinearStatus::InProgress,
                 "completed" => LinearStatus::Done,
-                "canceled" => LinearStatus::Canceled,
-                _ => LinearStatus::InProgress,
+                "canceled" => {
+                    if state_name.contains("duplicate") {
+                        LinearStatus::Duplicate
+                    } else {
+                        LinearStatus::Canceled
+                    }
+                }
+                _ => {
+                    if state_name.contains("review") {
+                        LinearStatus::InReview
+                    } else if state_name.contains("duplicate") {
+                        LinearStatus::Duplicate
+                    } else if state_name.contains("triage") {
+                        LinearStatus::Triage
+                    } else {
+                        LinearStatus::InProgress
+                    }
+                }
             };
 
             let priority = node["priority"]
@@ -235,6 +441,21 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                 None
             };
 
+            // Parse labels
+            let labels = node["labels"]["nodes"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|l| {
+                            Some(LinearLabel {
+                                name: l["name"].as_str()?.to_string(),
+                                color: l["color"].as_str().unwrap_or("#888888").to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             Some(LinearIssue {
                 id: node["id"].as_str()?.to_string(),
                 identifier: node["identifier"].as_str()?.to_string(),
@@ -243,11 +464,23 @@ pub async fn search_issues(config: &Config, query: &str) -> Result<Vec<LinearIss
                 status,
                 priority,
                 url: node["url"].as_str()?.to_string(),
+                created_at: node["createdAt"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(Utc::now),
                 updated_at: node["updatedAt"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(Utc::now),
                 cycle,
+                labels,
+                project: node["project"]["name"].as_str().map(String::from),
+                team: node["team"]["name"].as_str().map(String::from),
+                estimate: node["estimate"].as_f64().map(|e| e as f32),
+                // Search results don't include full metadata
+                attachments: Vec::new(),
+                parent: None,
+                children: Vec::new(),
             })
         })
         .collect();

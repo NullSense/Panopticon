@@ -1,9 +1,11 @@
 use crate::config::Config;
 use crate::data::{AppState, LinearCycle, LinearPriority, LinearStatus, VisualItem, Workstream};
 use crate::integrations;
+use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc;
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -14,6 +16,26 @@ pub struct SearchMatch {
     pub excerpt: String,
     #[allow(dead_code)]
     pub match_in: String, // "title", "description", or "id" - for potential future use
+}
+
+/// Progress tracking for background refresh
+#[derive(Clone, Debug)]
+pub struct RefreshProgress {
+    pub total_issues: usize,
+    pub completed: usize,
+    pub current_stage: String,
+}
+
+/// Result from background refresh task
+pub enum RefreshResult {
+    /// Progress update
+    Progress(RefreshProgress),
+    /// Single workstream completed
+    Workstream(Workstream),
+    /// Refresh completed successfully
+    Complete,
+    /// Error occurred
+    Error(String),
 }
 
 /// Column indices for resize mode
@@ -41,6 +63,8 @@ pub struct App {
     pub show_help: bool,
     pub help_tab: usize, // 0 = shortcuts, 1 = status legend
     pub show_link_menu: bool,
+    /// Quick links popup within issue details
+    pub show_links_popup: bool,
     pub show_sort_menu: bool,
     pub show_preview: bool,
     pub search_all: bool,
@@ -63,6 +87,28 @@ pub struct App {
     pub filter_priorities: HashSet<LinearPriority>,
     /// Available cycles (populated from workstreams)
     pub available_cycles: Vec<LinearCycle>,
+    /// Show full description modal
+    pub show_description_modal: bool,
+    /// Description scroll position (line offset)
+    pub description_scroll: usize,
+    /// Show sub-issues (issues with a parent) - default true
+    pub show_sub_issues: bool,
+    /// Selected child/sub-issue index in link menu (for j/k navigation)
+    pub selected_child_idx: Option<usize>,
+    /// Navigation stack for in-modal issue navigation (stores issue IDs for back navigation)
+    pub issue_navigation_stack: Vec<String>,
+    /// Currently viewed issue ID in modal (if different from selected workstream)
+    pub modal_issue_id: Option<String>,
+    /// Scroll offset for sub-issues list in modal
+    pub sub_issues_scroll: usize,
+    /// Modal search mode active
+    pub modal_search_mode: bool,
+    /// Modal search query
+    pub modal_search_query: String,
+    /// Channel receiver for background refresh results
+    pub refresh_rx: Option<mpsc::Receiver<RefreshResult>>,
+    /// Progress tracking for incremental updates
+    pub refresh_progress: Option<RefreshProgress>,
 }
 
 impl App {
@@ -76,6 +122,7 @@ impl App {
             show_help: false,
             help_tab: 0,
             show_link_menu: false,
+            show_links_popup: false,
             show_sort_menu: false,
             show_preview: false,
             search_all: false,
@@ -91,6 +138,17 @@ impl App {
             filter_cycles: HashSet::new(),
             filter_priorities: HashSet::new(),
             available_cycles: Vec::new(),
+            show_description_modal: false,
+            description_scroll: 0,
+            show_sub_issues: true, // Default: show all issues including sub-issues
+            selected_child_idx: None,
+            issue_navigation_stack: Vec::new(),
+            modal_issue_id: None,
+            sub_issues_scroll: 0,
+            modal_search_mode: false,
+            modal_search_query: String::new(),
+            refresh_rx: None,
+            refresh_progress: None,
         }
     }
 
@@ -178,6 +236,9 @@ impl App {
                 // Extract available cycles from workstreams
                 self.update_available_cycles();
 
+                // Calculate optimal column widths based on content
+                self.calculate_optimal_widths();
+
                 // Apply filters
                 self.apply_filters();
                 self.rebuild_visual_items();
@@ -191,6 +252,152 @@ impl App {
 
         self.is_loading = false;
         Ok(())
+    }
+
+    /// Start refresh in background (non-blocking)
+    pub fn start_background_refresh(&mut self) {
+        // Don't start another refresh if one is already in progress
+        if self.refresh_rx.is_some() {
+            return;
+        }
+
+        self.is_loading = true;
+        self.state.workstreams.clear(); // Clear existing data for incremental loading
+        self.refresh_progress = Some(RefreshProgress {
+            total_issues: 0,
+            completed: 0,
+            current_stage: "Fetching Linear issues...".to_string(),
+        });
+
+        let (tx, rx) = mpsc::channel(100);
+        self.refresh_rx = Some(rx);
+
+        let config = self.config.clone();
+
+        // Spawn background task
+        tokio::spawn(async move {
+            if let Err(e) = integrations::fetch_workstreams_incremental(&config, tx.clone()).await {
+                let _ = tx.send(RefreshResult::Error(e.to_string())).await;
+            }
+        });
+    }
+
+    /// Poll for refresh results (non-blocking, call from event loop tick)
+    pub fn poll_refresh(&mut self) -> bool {
+        // Take ownership of the receiver to avoid borrow issues
+        let Some(mut rx) = self.refresh_rx.take() else {
+            return false;
+        };
+
+        let mut completed = false;
+        let mut should_restore = true;
+
+        // Non-blocking receive of all available results
+        while let Ok(result) = rx.try_recv() {
+            match result {
+                RefreshResult::Progress(progress) => {
+                    self.refresh_progress = Some(progress);
+                }
+                RefreshResult::Workstream(ws) => {
+                    self.state.workstreams.push(ws);
+                    if let Some(ref mut p) = self.refresh_progress {
+                        p.completed += 1;
+                    }
+                }
+                RefreshResult::Complete => {
+                    self.is_loading = false;
+                    self.refresh_progress = None;
+                    self.state.last_refresh = Some(Utc::now());
+                    self.update_available_cycles();
+                    self.calculate_optimal_widths();
+                    self.apply_filters();
+                    self.rebuild_visual_items();
+                    self.error_message = None;
+                    completed = true;
+                    should_restore = false;
+                }
+                RefreshResult::Error(msg) => {
+                    self.is_loading = false;
+                    self.refresh_progress = None;
+                    self.error_message = Some(format!("Refresh failed: {}", msg));
+                    completed = true;
+                    should_restore = false;
+                }
+            }
+        }
+
+        // Restore receiver if not completed
+        if should_restore {
+            self.refresh_rx = Some(rx);
+        }
+
+        completed
+    }
+
+    /// Calculate optimal column widths based on content
+    pub fn calculate_optimal_widths(&mut self) {
+        // Default min widths
+        let mut max_id_len = 6usize; // "ID" header + padding
+        let mut max_title_len = 8usize; // "Title" header + padding
+        let mut max_pr_len = 8usize; // "PR" header + padding
+        let mut max_agent_len = 8usize; // "Agent" header + padding
+
+        for ws in &self.state.workstreams {
+            let issue = &ws.linear_issue;
+
+            // ID column
+            max_id_len = max_id_len.max(issue.identifier.len());
+
+            // Title column (cap at reasonable max to prevent single long title from dominating)
+            max_title_len = max_title_len.max(issue.title.chars().count().min(50));
+
+            // PR column
+            if let Some(pr) = &ws.github_pr {
+                let pr_text = format!("PR#{}", pr.number);
+                max_pr_len = max_pr_len.max(pr_text.len() + 2); // +2 for icon
+            }
+
+            // Agent column
+            if let Some(session) = &ws.agent_session {
+                let agent_text = session.status.label();
+                max_agent_len = max_agent_len.max(agent_text.len() + 2); // +2 for icon
+            }
+        }
+
+        // Apply calculated widths with some padding
+        self.column_widths[COL_IDX_ID] = max_id_len + 1;
+        self.column_widths[COL_IDX_TITLE] = max_title_len.min(40); // Cap title at 40
+        self.column_widths[COL_IDX_PR] = max_pr_len.min(15);
+        self.column_widths[COL_IDX_AGENT] = max_agent_len.min(12);
+
+        // Status, Priority, Vercel, and Time have fixed widths
+        // (already set in defaults, no need to recalculate)
+    }
+
+    /// Recalculate column widths for given terminal width
+    pub fn recalculate_column_widths(&mut self, terminal_width: u16) {
+        // Calculate fixed widths (status, priority, vercel, time, separators)
+        let fixed_widths = self.column_widths[COL_IDX_STATUS]
+            + self.column_widths[COL_IDX_PRIORITY]
+            + self.column_widths[COL_IDX_VERCEL]
+            + self.column_widths[COL_IDX_TIME]
+            + 24; // Separators and padding
+
+        let available = (terminal_width as usize).saturating_sub(fixed_widths);
+
+        // Distribute remaining space to ID, Title, PR, Agent
+        // Title gets 50%, ID gets 20%, PR gets 15%, Agent gets 15%
+        if available > 40 {
+            let title_width = (available * 50 / 100).min(50).max(15);
+            let id_width = (available * 20 / 100).min(15).max(6);
+            let pr_width = (available * 15 / 100).min(15).max(8);
+            let agent_width = (available * 15 / 100).min(12).max(8);
+
+            self.column_widths[COL_IDX_ID] = id_width;
+            self.column_widths[COL_IDX_TITLE] = title_width;
+            self.column_widths[COL_IDX_PR] = pr_width;
+            self.column_widths[COL_IDX_AGENT] = agent_width;
+        }
     }
 
     /// Extract unique cycles from workstreams
@@ -237,68 +444,24 @@ impl App {
             self.filtered_indices = (0..self.state.workstreams.len()).collect();
         } else {
             let query = &self.state.search_query;
-            let query_lower = query.to_lowercase();
-
+            let mut fuzzy = FuzzySearch::new();
             let mut results: Vec<(usize, u32, Option<SearchMatch>)> = Vec::new();
 
             for (i, ws) in self.state.workstreams.iter().enumerate() {
-                let issue = &ws.linear_issue;
-
-                // Check identifier (exact substring match)
-                let id_score = if issue.identifier.to_lowercase().contains(&query_lower) {
-                    Some(1000u32)
-                } else {
-                    None
-                };
-
-                // Check title (case-insensitive substring match)
-                let title_lower = issue.title.to_lowercase();
-                let title_score = if title_lower.contains(&query_lower) {
-                    // Score based on how much of the title is matched
-                    let ratio = query.len() as f32 / issue.title.len() as f32;
-                    Some((ratio * 500.0) as u32 + 500)
-                } else {
-                    None
-                };
-
-                // Check description (case-insensitive substring match)
-                let (desc_score, desc_excerpt) = if let Some(desc) = &issue.description {
-                    let desc_lower = desc.to_lowercase();
-                    if desc_lower.contains(&query_lower) {
-                        let excerpt = create_excerpt(desc, query, 80);
-                        let ratio = query.len() as f32 / desc.len().min(200) as f32;
-                        (Some((ratio * 200.0) as u32 + 100), Some(excerpt))
-                    } else {
-                        (None, None)
-                    }
-                } else {
-                    (None, None)
-                };
-
-                // Combine scores
-                let best_score = [id_score, title_score, desc_score]
-                    .into_iter()
-                    .flatten()
-                    .max();
-
-                if let Some(score) = best_score {
-                    let search_match = if desc_excerpt.is_some() && id_score.is_none() && title_score.is_none() {
-                        // Only show excerpt if the match was in description (not title/id)
-                        desc_excerpt.map(|excerpt| SearchMatch {
-                            excerpt,
-                            match_in: "description".to_string(),
-                        })
-                    } else if desc_excerpt.is_some() && title_score.is_none() {
-                        // Also show if it matched in description even if ID matched
-                        desc_excerpt.map(|excerpt| SearchMatch {
-                            excerpt,
-                            match_in: "description".to_string(),
+                if let Some(result) = fuzzy.search_workstream(ws, query) {
+                    // Only show excerpt for non-obvious matches (not identifier or title)
+                    let search_match = if result.matched_field != "identifier"
+                        && result.matched_field != "title"
+                    {
+                        Some(SearchMatch {
+                            excerpt: result.excerpt,
+                            match_in: result.matched_field,
                         })
                     } else {
                         None
                     };
 
-                    results.push((i, score, search_match));
+                    results.push((i, result.score, search_match));
                 }
             }
 
@@ -395,6 +558,100 @@ impl App {
         }
     }
 
+    /// Get the issue currently being viewed in the modal
+    /// Returns the navigated-to issue if set, otherwise the selected workstream
+    pub fn modal_issue(&self) -> Option<&Workstream> {
+        if let Some(ref issue_id) = self.modal_issue_id {
+            self.state
+                .workstreams
+                .iter()
+                .find(|ws| ws.linear_issue.id == *issue_id)
+        } else {
+            self.selected_workstream()
+        }
+    }
+
+    /// Navigate to an issue in the modal (for in-modal parent/child navigation)
+    /// Pushes current issue to stack and sets the new issue as current
+    pub fn navigate_to_issue(&mut self, issue_id: &str) {
+        // Push current issue to stack for back navigation
+        if let Some(current) = self.modal_issue() {
+            self.issue_navigation_stack
+                .push(current.linear_issue.id.clone());
+        }
+        self.modal_issue_id = Some(issue_id.to_string());
+        self.selected_child_idx = None;
+        self.sub_issues_scroll = 0;
+        self.description_scroll = 0;
+    }
+
+    /// Go back in the navigation stack
+    /// Returns true if we went back, false if stack was empty
+    pub fn navigate_back(&mut self) -> bool {
+        if let Some(prev_id) = self.issue_navigation_stack.pop() {
+            self.modal_issue_id = Some(prev_id);
+            self.selected_child_idx = None;
+            self.sub_issues_scroll = 0;
+            self.description_scroll = 0;
+            true
+        } else {
+            // Stack empty, clear modal_issue_id to return to selected workstream
+            if self.modal_issue_id.is_some() {
+                self.modal_issue_id = None;
+                self.selected_child_idx = None;
+                self.sub_issues_scroll = 0;
+                self.description_scroll = 0;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Clear navigation state (when closing modal)
+    pub fn clear_navigation(&mut self) {
+        self.issue_navigation_stack.clear();
+        self.modal_issue_id = None;
+        self.selected_child_idx = None;
+        self.sub_issues_scroll = 0;
+        self.modal_search_mode = false;
+        self.modal_search_query.clear();
+    }
+
+    /// Enter modal search mode
+    pub fn enter_modal_search(&mut self) {
+        self.modal_search_mode = true;
+        self.modal_search_query.clear();
+    }
+
+    /// Exit modal search mode
+    pub fn exit_modal_search(&mut self) {
+        self.modal_search_mode = false;
+        // Keep query for showing results
+    }
+
+    /// Clear modal search
+    pub fn clear_modal_search(&mut self) {
+        self.modal_search_mode = false;
+        self.modal_search_query.clear();
+    }
+
+    /// Check if an issue ID exists in our workstreams
+    pub fn issue_exists(&self, issue_id: &str) -> bool {
+        self.state
+            .workstreams
+            .iter()
+            .any(|ws| ws.linear_issue.id == *issue_id)
+    }
+
+    /// Find workstream by identifier (e.g., "DRE-123")
+    pub fn find_by_identifier(&self, identifier: &str) -> Option<&Workstream> {
+        self.state
+            .workstreams
+            .iter()
+            .find(|ws| ws.linear_issue.identifier == identifier)
+    }
+
     pub async fn open_primary_link(&self) -> Result<()> {
         if let Some(ws) = self.selected_workstream() {
             open_linear_url(&ws.linear_issue.url)?;
@@ -403,14 +660,14 @@ impl App {
     }
 
     pub async fn open_linear_link(&self) -> Result<()> {
-        if let Some(ws) = self.selected_workstream() {
+        if let Some(ws) = self.modal_issue() {
             open_linear_url(&ws.linear_issue.url)?;
         }
         Ok(())
     }
 
     pub async fn open_github_link(&self) -> Result<()> {
-        if let Some(ws) = self.selected_workstream() {
+        if let Some(ws) = self.modal_issue() {
             if let Some(pr) = &ws.github_pr {
                 open_url(&pr.url)?;
             }
@@ -419,7 +676,7 @@ impl App {
     }
 
     pub async fn open_vercel_link(&self) -> Result<()> {
-        if let Some(ws) = self.selected_workstream() {
+        if let Some(ws) = self.modal_issue() {
             if let Some(deploy) = &ws.vercel_deployment {
                 open_url(&deploy.url)?;
             }
@@ -429,15 +686,153 @@ impl App {
 
     pub fn open_link_menu(&mut self) {
         self.show_link_menu = !self.show_link_menu;
+        if !self.show_link_menu {
+            self.clear_navigation();
+        }
     }
 
     pub async fn teleport_to_session(&self) -> Result<()> {
-        if let Some(ws) = self.selected_workstream() {
+        if let Some(ws) = self.modal_issue() {
             if let Some(session) = &ws.agent_session {
                 integrations::claude::focus_session_window(session).await?;
             }
         }
         Ok(())
+    }
+
+    /// Open a document attachment by index (0-based)
+    pub fn open_document(&self, index: usize) -> Result<()> {
+        if let Some(ws) = self.modal_issue() {
+            if let Some(attachment) = ws.linear_issue.attachments.get(index) {
+                open_url(&attachment.url)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open a child issue by index (0-based)
+    pub fn open_child_issue(&self, index: usize) -> Result<()> {
+        if let Some(ws) = self.modal_issue() {
+            if let Some(child) = ws.linear_issue.children.get(index) {
+                open_linear_url(&child.url)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Maximum visible sub-issues in the link menu
+    const SUB_ISSUES_VISIBLE_HEIGHT: usize = 8;
+
+    /// Navigate to next sub-issue in link menu
+    pub fn next_child_issue(&mut self) {
+        if let Some(ws) = self.modal_issue() {
+            let children_count = ws.linear_issue.children.len();
+            if children_count == 0 {
+                return;
+            }
+
+            let new_idx = match self.selected_child_idx {
+                None => 0,
+                Some(idx) => (idx + 1).min(children_count.saturating_sub(1)),
+            };
+            self.selected_child_idx = Some(new_idx);
+
+            // Auto-scroll to keep selection visible
+            let visible_end = self.sub_issues_scroll + Self::SUB_ISSUES_VISIBLE_HEIGHT;
+            if new_idx >= visible_end {
+                self.sub_issues_scroll = new_idx.saturating_sub(Self::SUB_ISSUES_VISIBLE_HEIGHT - 1);
+            }
+        }
+    }
+
+    /// Navigate to previous sub-issue in link menu
+    pub fn prev_child_issue(&mut self) {
+        if let Some(ws) = self.modal_issue() {
+            if ws.linear_issue.children.is_empty() {
+                return;
+            }
+
+            let new_idx = match self.selected_child_idx {
+                None => 0,
+                Some(idx) => idx.saturating_sub(1),
+            };
+            self.selected_child_idx = Some(new_idx);
+
+            // Auto-scroll to keep selection visible
+            if new_idx < self.sub_issues_scroll {
+                self.sub_issues_scroll = new_idx;
+            }
+        }
+    }
+
+    /// Open currently selected sub-issue in browser
+    pub fn open_selected_child_issue(&self) -> Result<()> {
+        if let Some(idx) = self.selected_child_idx {
+            self.open_child_issue(idx)?;
+        }
+        Ok(())
+    }
+
+    /// Open the parent issue in browser
+    pub fn open_parent_issue(&self) -> Result<()> {
+        if let Some(ws) = self.modal_issue() {
+            if let Some(parent) = &ws.linear_issue.parent {
+                open_linear_url(&parent.url)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Navigate to parent issue in modal if it exists in workstreams
+    /// Returns true if navigation happened (stayed in modal), false if not available
+    pub fn navigate_to_parent(&mut self) -> bool {
+        if let Some(ws) = self.modal_issue() {
+            if let Some(parent) = &ws.linear_issue.parent {
+                // Check if parent exists in our workstreams by identifier
+                let parent_id = parent.identifier.clone();
+                if let Some(parent_ws) = self
+                    .state
+                    .workstreams
+                    .iter()
+                    .find(|w| w.linear_issue.identifier == parent_id)
+                {
+                    let target_id = parent_ws.linear_issue.id.clone();
+                    self.navigate_to_issue(&target_id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Navigate to child issue by index in modal if it exists in workstreams
+    /// Returns true if navigation happened, false if not available
+    pub fn navigate_to_child(&mut self, child_idx: usize) -> bool {
+        if let Some(ws) = self.modal_issue() {
+            if let Some(child) = ws.linear_issue.children.get(child_idx) {
+                // Check if child exists in our workstreams by identifier
+                let child_identifier = child.identifier.clone();
+                if let Some(child_ws) = self
+                    .state
+                    .workstreams
+                    .iter()
+                    .find(|w| w.linear_issue.identifier == child_identifier)
+                {
+                    let target_id = child_ws.linear_issue.id.clone();
+                    self.navigate_to_issue(&target_id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Navigate to selected child issue in modal
+    pub fn navigate_to_selected_child(&mut self) -> bool {
+        if let Some(idx) = self.selected_child_idx {
+            return self.navigate_to_child(idx);
+        }
+        false
     }
 
     pub fn toggle_preview(&mut self) {
@@ -446,6 +841,27 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    // Description modal
+    pub fn open_description_modal(&mut self) {
+        if let Some(ws) = self.modal_issue() {
+            if ws.linear_issue.description.is_some() {
+                self.show_description_modal = true;
+                self.description_scroll = 0;
+                self.show_link_menu = false;
+            }
+        }
+    }
+
+    pub fn close_description_modal(&mut self) {
+        self.show_description_modal = false;
+        self.description_scroll = 0;
+    }
+
+    pub fn scroll_description(&mut self, delta: i32) {
+        let new_scroll = self.description_scroll as i32 + delta;
+        self.description_scroll = new_scroll.max(0) as usize;
     }
 
     // Section collapse/expand
@@ -562,6 +978,12 @@ impl App {
         self.rebuild_visual_items();
     }
 
+    pub fn toggle_sub_issues(&mut self) {
+        self.show_sub_issues = !self.show_sub_issues;
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
     /// Apply filters to create filtered_indices
     pub fn apply_filters(&mut self) {
         self.filtered_indices = self.state.workstreams
@@ -585,6 +1007,11 @@ impl App {
                     if !self.filter_priorities.contains(&ws.linear_issue.priority) {
                         return false;
                     }
+                }
+
+                // Sub-issue filter (if disabled, hide issues that have a parent)
+                if !self.show_sub_issues && ws.linear_issue.parent.is_some() {
+                    return false;
                 }
 
                 true
@@ -627,43 +1054,6 @@ fn open_linear_url(url: &str) -> Result<()> {
         Err(_) => {
             // Fallback to browser URL if desktop app not available
             open_url(url)
-        }
-    }
-}
-
-/// Create an excerpt from text around a search query
-fn create_excerpt(text: &str, query: &str, max_len: usize) -> String {
-    let text_lower = text.to_lowercase();
-    let query_lower = query.to_lowercase();
-
-    // Find the position of the query in the text
-    if let Some(pos) = text_lower.find(&query_lower) {
-        // Calculate start position (with some context before)
-        let context_before = 20;
-        let start = pos.saturating_sub(context_before);
-
-        // Find actual char boundaries
-        let start = text
-            .char_indices()
-            .find(|(i, _)| *i >= start)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-
-        // Get the excerpt
-        let excerpt: String = text.chars().skip(start).take(max_len).collect();
-
-        // Add ellipsis if truncated
-        let prefix = if start > 0 { "..." } else { "" };
-        let suffix = if start + max_len < text.len() { "..." } else { "" };
-
-        format!("{}{}{}", prefix, excerpt.trim(), suffix)
-    } else {
-        // Fallback: just take the beginning
-        let excerpt: String = text.chars().take(max_len).collect();
-        if text.len() > max_len {
-            format!("{}...", excerpt.trim())
-        } else {
-            excerpt
         }
     }
 }

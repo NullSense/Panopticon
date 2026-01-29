@@ -20,8 +20,23 @@ pub struct LinearIssue {
     pub status: LinearStatus,
     pub priority: LinearPriority,
     pub url: String,
+    pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub cycle: Option<LinearCycle>,
+    pub labels: Vec<LinearLabel>,
+    pub project: Option<String>,
+    pub team: Option<String>,
+    pub estimate: Option<f32>,
+    pub attachments: Vec<LinearAttachment>,
+    pub parent: Option<LinearParentRef>,
+    pub children: Vec<LinearChildRef>,
+}
+
+/// Linear label
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearLabel {
+    pub name: String,
+    pub color: String,
 }
 
 /// Linear cycle (sprint)
@@ -32,6 +47,36 @@ pub struct LinearCycle {
     pub number: i32,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
+}
+
+/// Linear attachment (document/link)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearAttachment {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub source_type: Option<String>,
+}
+
+/// Reference to parent issue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearParentRef {
+    pub id: String,
+    pub identifier: String,
+    pub title: String,
+    pub url: String,
+}
+
+/// Reference to child/sub-issue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearChildRef {
+    pub id: String,
+    pub identifier: String,
+    pub title: String,
+    pub url: String,
+    pub status: LinearStatus,
+    pub priority: LinearPriority,
 }
 
 /// Linear issue priority (0-4 from API)
@@ -67,27 +112,74 @@ impl LinearPriority {
             Self::NoPriority => 4,
         }
     }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Urgent => "Urgent",
+            Self::High => "High",
+            Self::Medium => "Medium",
+            Self::Low => "Low",
+            Self::NoPriority => "None",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Urgent => "Highest priority (red bg)",
+            Self::High => "High priority",
+            Self::Medium => "Medium priority",
+            Self::Low => "Low priority",
+            Self::NoPriority => "No priority set",
+        }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            Self::Urgent,
+            Self::High,
+            Self::Medium,
+            Self::Low,
+            Self::NoPriority,
+        ].into_iter()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LinearStatus {
+    Triage,
     Backlog,
     Todo,
     InProgress,
     InReview,
     Done,
     Canceled,
+    Duplicate,
 }
 
 impl LinearStatus {
     pub fn display_name(&self) -> &'static str {
         match self {
+            Self::Triage => "Triage",
             Self::Backlog => "Backlog",
             Self::Todo => "Todo",
             Self::InProgress => "In Progress",
             Self::InReview => "In Review",
             Self::Done => "Done",
             Self::Canceled => "Canceled",
+            Self::Duplicate => "Duplicate",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Triage => "Needs triage/categorization",
+            Self::Backlog => "Not yet prioritized",
+            Self::Todo => "Ready to start",
+            Self::InProgress => "Currently being worked on",
+            Self::InReview => "Awaiting review/feedback",
+            Self::Done => "Completed",
+            Self::Canceled => "No longer needed",
+            Self::Duplicate => "Marked as duplicate",
         }
     }
 
@@ -96,10 +188,26 @@ impl LinearStatus {
             Self::InProgress => 0,
             Self::InReview => 1,
             Self::Todo => 2,
-            Self::Backlog => 3,
-            Self::Done => 4,
-            Self::Canceled => 5,
+            Self::Triage => 3,
+            Self::Backlog => 4,
+            Self::Done => 5,
+            Self::Canceled => 6,
+            Self::Duplicate => 7,
         }
+    }
+
+    /// Iterator over all status variants in display order
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            Self::Triage,
+            Self::Backlog,
+            Self::Todo,
+            Self::InProgress,
+            Self::InReview,
+            Self::Done,
+            Self::Canceled,
+            Self::Duplicate,
+        ].into_iter()
     }
 }
 
@@ -125,30 +233,40 @@ pub enum GitHubPRStatus {
 }
 
 impl GitHubPRStatus {
-    #[allow(dead_code)]
-    pub fn icon(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
-            Self::Draft => "🔵",
-            Self::Open => "🟡",
-            Self::ReviewRequested => "🟡",
-            Self::ChangesRequested => "🟠",
-            Self::Approved => "🟢",
-            Self::Merged => "🟣",
-            Self::Closed => "⚫",
+            Self::Draft => "Draft",
+            Self::Open => "Open",
+            Self::ReviewRequested => "Review",
+            Self::ChangesRequested => "Changes",
+            Self::Approved => "Approved",
+            Self::Merged => "Merged",
+            Self::Closed => "Closed",
         }
     }
 
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
+    pub fn description(&self) -> &'static str {
         match self {
-            Self::Draft => "draft",
-            Self::Open => "open",
-            Self::ReviewRequested => "review",
-            Self::ChangesRequested => "changes",
-            Self::Approved => "approved",
-            Self::Merged => "merged",
-            Self::Closed => "closed",
+            Self::Draft => "Work in progress PR",
+            Self::Open => "Ready for review",
+            Self::ReviewRequested => "Review requested",
+            Self::ChangesRequested => "Changes requested",
+            Self::Approved => "Ready to merge",
+            Self::Merged => "Successfully merged",
+            Self::Closed => "Closed without merging",
         }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            Self::Draft,
+            Self::Open,
+            Self::ReviewRequested,
+            Self::ChangesRequested,
+            Self::Approved,
+            Self::Merged,
+            Self::Closed,
+        ].into_iter()
     }
 }
 
@@ -170,15 +288,34 @@ pub enum VercelStatus {
 }
 
 impl VercelStatus {
-    #[allow(dead_code)]
-    pub fn icon(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
-            Self::Queued => "⏳",
-            Self::Building => "🔄",
-            Self::Ready => "✅",
-            Self::Error => "❌",
-            Self::Canceled => "⚫",
+            Self::Ready => "Ready",
+            Self::Building => "Building",
+            Self::Queued => "Queued",
+            Self::Error => "Error",
+            Self::Canceled => "Canceled",
         }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Ready => "Deployed successfully",
+            Self::Building => "Build in progress",
+            Self::Queued => "Waiting to build",
+            Self::Error => "Deployment failed",
+            Self::Canceled => "Deployment canceled",
+        }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            Self::Ready,
+            Self::Building,
+            Self::Queued,
+            Self::Error,
+            Self::Canceled,
+        ].into_iter()
     }
 }
 
@@ -219,25 +356,34 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
-    #[allow(dead_code)]
-    pub fn icon(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
-            Self::Running => "🟢",
-            Self::Idle => "🟡",
-            Self::WaitingForInput => "🔴",
-            Self::Done => "⚪",
-            Self::Error => "❌",
+            Self::Running => "Running",
+            Self::Idle => "Idle",
+            Self::WaitingForInput => "Waiting",
+            Self::Done => "Done",
+            Self::Error => "Error",
         }
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn description(&self) -> &'static str {
         match self {
-            Self::Running => "running",
-            Self::Idle => "idle",
-            Self::WaitingForInput => "waiting",
-            Self::Done => "done",
-            Self::Error => "error",
+            Self::Running => "Agent actively working",
+            Self::Idle => "Agent paused/waiting",
+            Self::WaitingForInput => "Needs your input (!)",
+            Self::Done => "Agent finished",
+            Self::Error => "Agent encountered error",
         }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            Self::Running,
+            Self::Idle,
+            Self::WaitingForInput,
+            Self::Done,
+            Self::Error,
+        ].into_iter()
     }
 }
 
