@@ -1,7 +1,7 @@
 use super::App;
 use super::keybindings::{generate_footer_hints, generate_keyboard_shortcuts, Mode};
 use super::search::FuzzySearch;
-use crate::data::{AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SortMode, VercelStatus, VisualItem};
+use crate::data::{AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SectionType, SortMode, VercelStatus, VisualItem};
 use pulldown_cmark::{Event, Parser, Tag};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -590,13 +590,19 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
         let is_selected = visual_idx == app.visual_selected;
 
         match item {
-            VisualItem::SectionHeader(status) => {
-                let is_collapsed = app.state.collapsed_sections.contains(status);
+            VisualItem::SectionHeader(section_type) => {
+                let is_collapsed = app.state.collapsed_sections.contains(section_type);
                 let indicator = if is_collapsed { icons::COLLAPSED } else { icons::EXPANDED };
 
                 // Count items in this section
                 let count = app.state.workstreams.iter()
-                    .filter(|ws| ws.linear_issue.status == *status)
+                    .filter(|ws| {
+                        let in_section = match section_type {
+                            SectionType::AgentSessions => ws.agent_session.is_some(),
+                            SectionType::Issues => ws.agent_session.is_none(),
+                        };
+                        in_section
+                    })
                     .filter(|ws| {
                         app.state.workstreams.iter()
                             .position(|w| w.linear_issue.id == ws.linear_issue.id)
@@ -605,17 +611,21 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     })
                     .count();
 
-                let header = format!("{} {} ({})", indicator, status.display_name(), count);
-                // Use status-specific colors (Triage=orange, In Progress=blue, etc.)
-                let status_cfg = linear_status_config(*status);
-                let base_style = status_cfg.style.add_modifier(Modifier::BOLD);
-                let style = if is_selected {
+                // Section-specific styling
+                let (icon, style) = match section_type {
+                    SectionType::AgentSessions => (icons::HEADER_AGENT, Style::default().fg(Color::Cyan)),
+                    SectionType::Issues => (icons::HEADER_ID, Style::default().fg(Color::White)),
+                };
+
+                let header = format!("{} {} {} ({})", indicator, icon, section_type.display_name(), count);
+                let base_style = style.add_modifier(Modifier::BOLD);
+                let final_style = if is_selected {
                     base_style.bg(Color::DarkGray)
                 } else {
                     base_style
                 };
 
-                items.push(ListItem::new(Line::from(vec![Span::styled(header, style)])));
+                items.push(ListItem::new(Line::from(vec![Span::styled(header, final_style)])));
             }
             VisualItem::Workstream(ws_idx) => {
                 if let Some(ws) = app.state.workstreams.get(*ws_idx) {
@@ -826,7 +836,12 @@ impl<'a> WorkstreamRowBuilder<'a> {
         let (text, style) = if let Some(session) = &self.ws.agent_session {
             let cfg = agent_status_config(session.status);
             let label = session.status.label();
-            let text = format!("{} {:<5}", cfg.icon, label);
+            // Add agent type prefix: CC for Claude Code, MB for Moltbot
+            let type_prefix = match session.agent_type {
+                crate::data::AgentType::ClaudeCode => "CC",
+                crate::data::AgentType::Clawdbot => "MB",
+            };
+            let text = format!("{} {} {}", type_prefix, cfg.icon, label);
             (pad_to_width(&text, width, Alignment::Left), cfg.style)
         } else {
             (
