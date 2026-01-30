@@ -26,7 +26,10 @@ fn test_parse_issue_with_null_optional_fields() {
     node["description"] = json!(null);
 
     let result = parse_issue(&node);
-    assert!(result.is_some(), "Should parse issue with null optional fields");
+    assert!(
+        result.is_some(),
+        "Should parse issue with null optional fields"
+    );
 
     let linked = result.unwrap();
     assert!(linked.issue.project.is_none());
@@ -78,7 +81,11 @@ fn test_all_status_types() {
         node["state"]["type"] = json!(state_type);
 
         let result = parse_issue(&node);
-        assert!(result.is_some(), "Should parse issue with state type: {}", state_type);
+        assert!(
+            result.is_some(),
+            "Should parse issue with state type: {}",
+            state_type
+        );
 
         let linked = result.unwrap();
         assert_eq!(
@@ -116,7 +123,10 @@ fn test_review_status_with_started_type() {
     });
 
     let result = parse_issue(&node);
-    assert!(result.is_some(), "Should parse issue with started type and review name");
+    assert!(
+        result.is_some(),
+        "Should parse issue with started type and review name"
+    );
 
     let linked = result.unwrap();
     assert_eq!(

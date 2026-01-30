@@ -8,9 +8,9 @@ pub mod vercel;
 
 use crate::config::Config;
 use crate::data::{AgentSession, LinearIssue, LinearPriority, LinearStatus, Workstream};
-use crate::tui::{RefreshProgress, RefreshResult};
-use chrono::Utc;
+use crate::tui::{RefreshMetadata, RefreshProgress, RefreshResult};
 use anyhow::Result;
+use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use once_cell::sync::Lazy;
 use std::sync::Arc;
@@ -54,7 +54,12 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             match vercel::fetch_deployment_for_branch(config, &pr.repo, &pr.branch).await {
                 Ok(deploy) => deploy,
                 Err(e) => {
-                    tracing::debug!("Failed to fetch Vercel deployment for {}/{}: {}", pr.repo, pr.branch, e);
+                    tracing::debug!(
+                        "Failed to fetch Vercel deployment for {}/{}: {}",
+                        pr.repo,
+                        pr.branch,
+                        e
+                    );
                     None
                 }
             }
@@ -102,6 +107,23 @@ pub async fn fetch_workstreams_incremental(
     config: &Config,
     tx: mpsc::Sender<RefreshResult>,
 ) -> Result<()> {
+    // Step 0: Fetch metadata (projects, team members, current user)
+    let (projects_res, members_res, current_user_res) = tokio::join!(
+        linear::fetch_projects(config),
+        linear::fetch_team_members(config),
+        linear::fetch_current_user_id(config)
+    );
+
+    let metadata = RefreshMetadata {
+        projects: projects_res.ok(),
+        team_members: members_res.ok(),
+        current_user_id: current_user_res.ok(),
+    };
+
+    if let Err(e) = tx.send(RefreshResult::Metadata(metadata)).await {
+        tracing::debug!("Failed to send metadata update: {}", e);
+    }
+
     // Step 1: Fetch all Linear issues first
     if let Err(e) = tx
         .send(RefreshResult::Progress(RefreshProgress {
@@ -190,7 +212,12 @@ pub async fn fetch_workstreams_incremental(
                     match vercel::fetch_deployment_for_branch(&config, &pr.repo, &pr.branch).await {
                         Ok(deploy) => deploy,
                         Err(e) => {
-                            tracing::debug!("Failed to fetch Vercel deployment for {}/{}: {}", pr.repo, pr.branch, e);
+                            tracing::debug!(
+                                "Failed to fetch Vercel deployment for {}/{}: {}",
+                                pr.repo,
+                                pr.branch,
+                                e
+                            );
                             None
                         }
                     }
@@ -214,7 +241,7 @@ pub async fn fetch_workstreams_incremental(
                     stale: false,
                 };
 
-                if let Err(e) = tx.send(RefreshResult::Workstream(ws)).await {
+                if let Err(e) = tx.send(RefreshResult::Workstream(Box::new(ws))).await {
                     tracing::debug!("Workstream channel closed: {}", e);
                 }
             }
@@ -234,7 +261,7 @@ pub async fn fetch_workstreams_incremental(
                 agent_session: Some(session.clone()),
                 stale: false,
             };
-            if let Err(e) = tx.send(RefreshResult::Workstream(ws)).await {
+            if let Err(e) = tx.send(RefreshResult::Workstream(Box::new(ws))).await {
                 tracing::debug!("Unlinked session channel closed: {}", e);
             }
         }
@@ -261,8 +288,8 @@ fn create_placeholder_issue(session: &AgentSession) -> LinearIssue {
         // Shorten path: /home/user/Projects/foo -> ~/Projects/foo
         if let Some(home) = dirs::home_dir() {
             if let Some(home_str) = home.to_str() {
-                if p.starts_with(home_str) {
-                    return format!("~{}", &p[home_str.len()..]);
+                if let Some(stripped) = p.strip_prefix(home_str) {
+                    return format!("~{}", stripped);
                 }
             }
         }
@@ -292,6 +319,8 @@ fn create_placeholder_issue(session: &AgentSession) -> LinearIssue {
         labels: vec![],
         project: None,
         team: None,
+        assignee_id: None,
+        assignee_name: None,
         estimate: None,
         attachments: vec![],
         parent: None,

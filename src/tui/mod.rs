@@ -16,7 +16,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
 
-pub use app::{App, ModalState, RefreshProgress, RefreshResult};
+pub use app::{App, ModalState, RefreshMetadata, RefreshProgress, RefreshResult};
 pub use message::Message;
 
 pub async fn run(config: Config) -> Result<()> {

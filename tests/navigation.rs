@@ -39,7 +39,7 @@ fn make_workstream_with_hierarchy(
     id: &str,
     identifier: &str,
     priority: LinearPriority,
-    parent: Option<(&str, &str)>, // (id, identifier)
+    parent: Option<(&str, &str)>,                // (id, identifier)
     children: Vec<(&str, &str, LinearPriority)>, // (id, identifier, priority)
 ) -> Workstream {
     Workstream {
@@ -55,6 +55,8 @@ fn make_workstream_with_hierarchy(
             labels: Vec::new(),
             project: None,
             team: None,
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             created_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -80,7 +82,7 @@ fn make_workstream_with_hierarchy(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
-            stale: false,
+        stale: false,
     }
 }
 
@@ -725,6 +727,8 @@ fn make_workstream_with_status_children(
             labels: Vec::new(),
             project: None,
             team: None,
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             created_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -745,7 +749,7 @@ fn make_workstream_with_status_children(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
-            stale: false,
+        stale: false,
     }
 }
 
@@ -960,7 +964,10 @@ fn test_scroll_uses_dynamic_visible_height_small() {
     assert_eq!(app.sub_issues_scroll, 0);
 
     app.next_child_issue(); // idx 2, idx+1=3 >= 3, scroll triggers!
-    assert_eq!(app.sub_issues_scroll, 1, "Should scroll at idx 2 with height 3");
+    assert_eq!(
+        app.sub_issues_scroll, 1,
+        "Should scroll at idx 2 with height 3"
+    );
 }
 
 #[test]
@@ -1002,10 +1009,16 @@ fn test_scroll_uses_dynamic_visible_height_large() {
         app.next_child_issue();
     }
     // Now at idx 8, idx+1=9 < 10, still no scroll
-    assert_eq!(app.sub_issues_scroll, 0, "Should not scroll at idx 8 with height 10");
+    assert_eq!(
+        app.sub_issues_scroll, 0,
+        "Should not scroll at idx 8 with height 10"
+    );
 
     app.next_child_issue(); // idx 9, idx+1=10 >= 10, scroll triggers!
-    assert_eq!(app.sub_issues_scroll, 1, "Should scroll at idx 9 with height 10");
+    assert_eq!(
+        app.sub_issues_scroll, 1,
+        "Should scroll at idx 9 with height 10"
+    );
 }
 
 #[test]

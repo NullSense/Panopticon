@@ -79,10 +79,12 @@ impl FuzzySearch {
         let mut haystack_buf = Vec::new();
         let haystack_utf32 = Utf32Str::new(haystack, &mut haystack_buf);
 
-        pattern.score(haystack_utf32, &mut self.matcher).map(|score| {
-            let match_type = self.match_type(term, haystack);
-            (score, match_type)
-        })
+        pattern
+            .score(haystack_utf32, &mut self.matcher)
+            .map(|score| {
+                let match_type = self.match_type(term, haystack);
+                (score, match_type)
+            })
     }
 
     /// Multi-term search: split query on whitespace, ALL terms must match (AND semantics)
@@ -184,7 +186,7 @@ impl FuzzySearch {
 
         // Helper to check if new result is better
         let is_better = |new_score: u32, current: &Option<SearchResult>| {
-            current.as_ref().map_or(true, |r| new_score > r.score)
+            current.as_ref().is_none_or(|r| new_score > r.score)
         };
 
         // Check title FIRST (highest priority field)
@@ -241,7 +243,8 @@ impl FuzzySearch {
         // Team
         if let Some(team) = &issue.team {
             if let Some((base_score, match_type)) = self.multi_term_match(query, team) {
-                let score = Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -255,7 +258,8 @@ impl FuzzySearch {
         // Project
         if let Some(project) = &issue.project {
             if let Some((base_score, match_type)) = self.multi_term_match(query, project) {
-                let score = Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -269,7 +273,8 @@ impl FuzzySearch {
         // Cycle
         if let Some(cycle) = &issue.cycle {
             if let Some((base_score, match_type)) = self.multi_term_match(query, &cycle.name) {
-                let score = Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -283,7 +288,8 @@ impl FuzzySearch {
         // Labels (slightly higher than other metadata, can be more specific)
         for label in &issue.labels {
             if let Some((base_score, match_type)) = self.multi_term_match(query, &label.name) {
-                let score = Self::calculate_score(base_score, match_type, 75).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 75).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -298,7 +304,8 @@ impl FuzzySearch {
         if let Some(parent) = &issue.parent {
             let parent_text = format!("{} {}", parent.identifier, parent.title);
             if let Some((base_score, match_type)) = self.multi_term_match(query, &parent_text) {
-                let score = Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -313,7 +320,8 @@ impl FuzzySearch {
         for child in &issue.children {
             let child_text = format!("{} {}", child.identifier, child.title);
             if let Some((base_score, match_type)) = self.multi_term_match(query, &child_text) {
-                let score = Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
+                let score =
+                    Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -326,8 +334,10 @@ impl FuzzySearch {
 
         // Attachments (low priority metadata)
         for attachment in &issue.attachments {
-            if let Some((base_score, match_type)) = self.multi_term_match(query, &attachment.title) {
-                let score = Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &attachment.title)
+            {
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
                 if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
                         score,
@@ -360,7 +370,7 @@ impl FuzzySearch {
         if !matched_primary {
             if let Some(ref mut result) = best_result {
                 // 50% penalty for metadata-only matches
-                result.score = result.score / 2;
+                result.score /= 2;
             }
         }
 

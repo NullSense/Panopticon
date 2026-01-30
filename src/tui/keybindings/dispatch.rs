@@ -116,6 +116,18 @@ fn check_chord_start(
                 return Some(Message::None);
             }
         }
+        Mode::FilterMenu => {
+            // 'p' starts p0-p9 chord for project filters
+            if key.modifiers.is_empty() && key.code == KeyCode::Char('p') {
+                input.set_pending(KeyCode::Char('p'));
+                return Some(Message::None);
+            }
+            // 's' starts s0-s9 chord for assignee filters
+            if key.modifiers.is_empty() && key.code == KeyCode::Char('s') {
+                input.set_pending(KeyCode::Char('s'));
+                return Some(Message::None);
+            }
+        }
         _ => {}
     }
     None
@@ -140,6 +152,26 @@ fn handle_chord(app: &App, first: KeyCode, second: KeyCode) -> Message {
                 Message::OpenDocument(digit - 1)
             } else {
                 Message::None
+            }
+        }
+
+        // p0-p9 -> project filters (in filter menu)
+        (KeyCode::Char('p'), KeyCode::Char(c)) if c.is_ascii_digit() && app.show_filter_menu() => {
+            let digit = c.to_digit(10).unwrap() as usize;
+            if digit == 0 {
+                Message::ClearProjectFilters
+            } else {
+                Message::ToggleProjectFilter(digit - 1)
+            }
+        }
+
+        // s0-s9 -> assignee filters (in filter menu)
+        (KeyCode::Char('s'), KeyCode::Char(c)) if c.is_ascii_digit() && app.show_filter_menu() => {
+            let digit = c.to_digit(10).unwrap() as usize;
+            if digit == 9 {
+                Message::ClearAssigneeFilters
+            } else {
+                Message::ToggleAssigneeFilter(digit)
             }
         }
 
@@ -204,9 +236,7 @@ fn matches_pattern(pattern: &KeyPattern, key: &KeyEvent) -> bool {
             }
             false
         }
-        KeyPattern::WithModifier { key: code, mods } => {
-            key.code == *code && key.modifiers == *mods
-        }
+        KeyPattern::WithModifier { key: code, mods } => key.code == *code && key.modifiers == *mods,
         KeyPattern::DigitRange(range) => {
             if let KeyCode::Char(c) = key.code {
                 if let Some(digit) = c.to_digit(10) {
@@ -222,7 +252,12 @@ fn matches_pattern(pattern: &KeyPattern, key: &KeyEvent) -> bool {
 }
 
 /// Convert a matched binding to the appropriate message.
-fn binding_to_message(app: &App, mode: Mode, binding: &super::KeyBinding, key: &KeyEvent) -> Message {
+fn binding_to_message(
+    app: &App,
+    mode: Mode,
+    binding: &super::KeyBinding,
+    key: &KeyEvent,
+) -> Message {
     // Handle special cases that need parameters from the key
     let result = match mode {
         Mode::Normal => match_normal_mode(key),
@@ -325,7 +360,7 @@ fn match_resize_mode(key: &KeyEvent) -> Option<Message> {
 fn match_sort_menu(key: &KeyEvent) -> Option<Message> {
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Message::CloseModal,
-        KeyCode::Char(c) if ('1'..='6').contains(&c) => {
+        KeyCode::Char(c) if c.is_ascii_digit() => {
             let idx = c.to_digit(10).unwrap() as usize;
             if let Some(mode) = SortMode::from_index(idx) {
                 Message::SetSortMode(mode)
@@ -341,7 +376,7 @@ fn match_sort_menu(key: &KeyEvent) -> Option<Message> {
 fn match_filter_menu(key: &KeyEvent) -> Option<Message> {
     Some(match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Message::CloseModal,
-        KeyCode::Char(c) if ('0'..='9').contains(&c) => {
+        KeyCode::Char(c) if c.is_ascii_digit() => {
             let idx = c.to_digit(10).unwrap() as usize;
             Message::ToggleCycleFilter(idx)
         }
@@ -353,8 +388,8 @@ fn match_filter_menu(key: &KeyEvent) -> Option<Message> {
         KeyCode::Char('t') => Message::ToggleSubIssues,
         KeyCode::Char('d') => Message::ToggleCompletedFilter,
         KeyCode::Char('x') => Message::ToggleCanceledFilter,
-        KeyCode::Char('a') => Message::ClearAllFilters,
-        KeyCode::Char('c') => Message::SelectAllFilters,
+        KeyCode::Char('a') => Message::SelectAllFilters,
+        KeyCode::Char('c') => Message::ClearAllFilters,
         _ => return None,
     })
 }

@@ -63,7 +63,10 @@ fn test_parse_issue_with_incomplete_parent() {
     });
 
     let result = parse_issue(&node);
-    assert!(result.is_some(), "Should parse issue even with incomplete parent");
+    assert!(
+        result.is_some(),
+        "Should parse issue even with incomplete parent"
+    );
 
     let linked = result.unwrap();
     assert!(linked.issue.parent.is_none());

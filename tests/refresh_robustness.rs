@@ -3,9 +3,7 @@
 //! Tests the shadow refresh pattern, timeout detection, and progress tracking.
 
 use chrono::Utc;
-use panopticon::data::{
-    LinearIssue, LinearPriority, LinearStatus, Workstream,
-};
+use panopticon::data::{LinearIssue, LinearPriority, LinearStatus, Workstream};
 
 fn make_workstream(id: &str, title: &str) -> Workstream {
     Workstream {
@@ -23,6 +21,8 @@ fn make_workstream(id: &str, title: &str) -> Workstream {
             labels: vec![],
             project: None,
             team: Some("Test".to_string()),
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             attachments: vec![],
             parent: None,
@@ -31,7 +31,7 @@ fn make_workstream(id: &str, title: &str) -> Workstream {
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
-            stale: false,
+        stale: false,
     }
 }
 
@@ -114,7 +114,7 @@ mod shadow_refresh {
     #[test]
     fn test_shadow_pattern_discards_on_error() {
         // Simulate shadow refresh pattern with error
-        let original_data = vec![
+        let original_data = [
             make_workstream("old-1", "Old Issue 1"),
             make_workstream("old-2", "Old Issue 2"),
         ];
@@ -139,15 +139,12 @@ mod timeout_detection {
     #[test]
     fn test_timeout_triggers_after_duration() {
         let timeout_duration = Duration::from_secs(60);
-        let refresh_started = Instant::now();
+        let _refresh_started = Instant::now();
 
         // Simulate time passing (we can't actually wait, so just test the logic)
         let elapsed = Duration::from_secs(0); // Just started
 
-        assert!(
-            elapsed < timeout_duration,
-            "Should not timeout immediately"
-        );
+        assert!(elapsed < timeout_duration, "Should not timeout immediately");
 
         // Test the comparison logic
         let would_timeout = |elapsed: Duration| elapsed > timeout_duration;
@@ -162,10 +159,14 @@ mod timeout_detection {
     fn test_timeout_cleared_on_completion() {
         // Timeout tracking should be cleared when refresh completes
         let mut refresh_started: Option<Instant> = Some(Instant::now());
+        assert!(refresh_started.is_some());
 
         // Simulate completion
         refresh_started = None;
 
-        assert!(refresh_started.is_none(), "Timeout tracking should be cleared");
+        assert!(
+            refresh_started.is_none(),
+            "Timeout tracking should be cleared"
+        );
     }
 }

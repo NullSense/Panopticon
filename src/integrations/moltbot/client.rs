@@ -42,11 +42,7 @@ pub async fn fetch_sessions(port: Option<u16>) -> Result<Vec<AgentSession>> {
         .timeout(Duration::from_millis(500))
         .build()?;
 
-    let response = client
-        .get(&url)
-        .query(&[("active", "true")])
-        .send()
-        .await?;
+    let response = client.get(&url).query(&[("active", "true")]).send().await?;
 
     if !response.status().is_success() {
         anyhow::bail!("Moltbot API returned status {}", response.status());

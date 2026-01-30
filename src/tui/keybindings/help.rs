@@ -12,7 +12,7 @@ pub fn generate_footer_hints(mode: Mode) -> &'static str {
         Mode::Description => "  j/k: scroll | gg/G: top/bottom | Esc: close",
         Mode::Help => "  1/2: tabs | Esc: close",
         Mode::SortMenu => "  1-6: select | Esc: close",
-        Mode::FilterMenu => "  0-9: cycles | u/h/m/l/n: priority | Esc: close",
+        Mode::FilterMenu => "  0-9: cycles | p0-9: projects | s0-8: assignees (s9=all) | u/h/m/l/n: priority | Esc: close",
         Mode::Resize => "  h/l: width | Tab: column | Esc: done",
         Mode::Normal => "  j/k: nav | o: details | l: links | /: search | ?: help",
         Mode::Search | Mode::ModalSearch => "  Enter: confirm | Esc: cancel",
@@ -90,15 +90,12 @@ pub fn generate_help_for_mode(mode: Mode) -> Vec<String> {
                 lines.push(String::new());
             }
             lines.push(format!("  {}", binding.category.label()));
-            lines.push(format!(
-                "  {}",
-                "─".repeat(binding.category.label().len())
-            ));
+            lines.push(format!("  {}", "─".repeat(binding.category.label().len())));
             current_category = Some(binding.category);
         }
 
         // Format the binding
-        let keys = format_binding_keys(&binding.pattern, &binding.alternatives);
+        let keys = format_binding_keys(&binding.pattern, binding.alternatives);
         lines.push(format!("  {:14}{}", keys, binding.description));
     }
 

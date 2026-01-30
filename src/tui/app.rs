@@ -1,6 +1,10 @@
 use crate::config::Config;
-use crate::data::{AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SectionType, SortMode, VisualItem, Workstream};
+use crate::data::{
+    AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SectionType, SortMode,
+    VisualItem, Workstream,
+};
 use crate::integrations;
+use crate::integrations::cache;
 use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
@@ -13,10 +17,6 @@ use unicode_width::UnicodeWidthStr;
 
 /// Timeout for refresh operations (60 seconds)
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Cooldown between user-action triggered refreshes (10 seconds)
-/// Prevents spamming the API when user rapidly opens/closes modals
-const USER_ACTION_REFRESH_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -37,12 +37,22 @@ pub struct RefreshProgress {
     pub current_stage: String,
 }
 
+/// Metadata loaded alongside workstreams during refresh
+#[derive(Clone, Debug, Default)]
+pub struct RefreshMetadata {
+    pub projects: Option<Vec<ProjectInfo>>,
+    pub team_members: Option<Vec<TeamMemberInfo>>,
+    pub current_user_id: Option<String>,
+}
+
 /// Result from background refresh task
 pub enum RefreshResult {
     /// Progress update
     Progress(RefreshProgress),
     /// Single workstream completed
-    Workstream(Workstream),
+    Workstream(Box<Workstream>),
+    /// Metadata update (projects, team members, current user)
+    Metadata(RefreshMetadata),
     /// Refresh completed successfully
     Complete,
     /// Error occurred
@@ -62,7 +72,7 @@ pub const NUM_COLUMNS: usize = 8;
 
 /// Column names for resize mode display
 pub const COLUMN_NAMES: [&str; NUM_COLUMNS] = [
-    "Status", "Priority", "ID", "Title", "PR", "Agent", "Vercel", "Time"
+    "Status", "Priority", "ID", "Title", "PR", "Agent", "Vercel", "Time",
 ];
 
 /// Active modal state - only one modal can be active at a time
@@ -71,8 +81,12 @@ pub const COLUMN_NAMES: [&str; NUM_COLUMNS] = [
 pub enum ModalState {
     #[default]
     None,
-    Help { tab: usize },
-    LinkMenu { show_links_popup: bool },
+    Help {
+        tab: usize,
+    },
+    LinkMenu {
+        show_links_popup: bool,
+    },
     SortMenu,
     FilterMenu,
     Description,
@@ -142,6 +156,8 @@ pub struct App {
     /// On success: swap with state.workstreams
     /// On error: discard and keep original data
     shadow_workstreams: Vec<Workstream>,
+    /// Shadow metadata for refresh (projects, team members, current user)
+    shadow_metadata: Option<RefreshMetadata>,
     /// Timestamp when refresh started (for timeout detection)
     refresh_started_at: Option<Instant>,
 }
@@ -164,7 +180,12 @@ impl App {
     }
 
     pub fn show_links_popup(&self) -> bool {
-        matches!(self.modal, ModalState::LinkMenu { show_links_popup: true })
+        matches!(
+            self.modal,
+            ModalState::LinkMenu {
+                show_links_popup: true
+            }
+        )
     }
 
     pub fn show_sort_menu(&self) -> bool {
@@ -186,19 +207,25 @@ impl App {
 
 impl App {
     pub fn new(config: Config) -> Self {
-        Self {
-            config: Arc::new(config),
-            state: AppState::default(),
+        let config = Arc::new(config);
+        let mut state = AppState::default();
+        if let Some(mode) = SortMode::from_config_str(&config.ui.default_sort) {
+            state.sort_mode = mode;
+        }
+
+        let mut app = Self {
+            config: Arc::clone(&config),
+            state,
             filtered_indices: vec![],
             visual_items: vec![],
             visual_selected: 0,
             modal: ModalState::None,
-            show_preview: false,
+            show_preview: config.ui.show_preview,
             error_message: None,
             is_loading: false,
             spinner_frame: 0,
             // Default widths: Status=1, Priority=3, ID=10, Title=26, PR=12, Agent=10, Vercel=3, Time=6
-            column_widths: [1, 3, 10, 26, 12, 10, 3, 6],
+            column_widths: config.ui.column_widths,
             resize_column_idx: COL_IDX_TITLE,
             search_all: false,
             search_excerpts: HashMap::new(),
@@ -210,9 +237,9 @@ impl App {
             available_projects: Vec::new(),
             available_team_members: Vec::new(),
             current_user_id: None,
-            show_sub_issues: true,
-            show_completed: false,
-            show_canceled: false,
+            show_sub_issues: config.ui.show_sub_issues,
+            show_completed: config.ui.show_completed,
+            show_canceled: config.ui.show_canceled,
             parent_selected: false,
             selected_child_idx: None,
             issue_navigation_stack: Vec::new(),
@@ -225,8 +252,32 @@ impl App {
             refresh_rx: None,
             refresh_progress: None,
             shadow_workstreams: Vec::new(),
+            shadow_metadata: None,
             refresh_started_at: None,
+        };
+
+        app.load_cached_state();
+        app
+    }
+
+    /// Load cached workstreams on startup (if enabled).
+    /// Cached data is marked as stale until the first refresh completes.
+    fn load_cached_state(&mut self) {
+        let Ok(Some(cache_data)) = cache::load_cache(&self.config) else {
+            return;
+        };
+
+        let mut workstreams = cache_data.workstreams;
+        for ws in &mut workstreams {
+            ws.stale = true;
         }
+
+        self.state.workstreams = workstreams;
+        self.state.last_refresh = Some(cache_data.last_sync);
+        self.update_available_cycles();
+        self.calculate_optimal_widths();
+        self.apply_filters();
+        self.rebuild_visual_items();
     }
 
     /// Process a message and update app state (Elm Architecture update function).
@@ -311,7 +362,9 @@ impl App {
             Message::ToggleCycleFilter(idx) => self.toggle_cycle_filter(idx),
             Message::TogglePriorityFilter(priority) => self.toggle_priority_filter(priority),
             Message::ToggleProjectFilter(idx) => self.toggle_project_filter(idx),
+            Message::ClearProjectFilters => self.clear_project_filters(),
             Message::ToggleAssigneeFilter(idx) => self.toggle_assignee_filter(idx),
+            Message::ClearAssigneeFilters => self.clear_assignee_filters(),
             Message::ToggleSubIssues => self.toggle_sub_issues(),
             Message::ToggleCompletedFilter => self.toggle_completed_filter(),
             Message::ToggleCanceledFilter => self.toggle_canceled_filter(),
@@ -332,10 +385,14 @@ impl App {
             // ─────────────────────────────────────────────────────────────────
             Message::OpenLinksPopup => {
                 // Works from both normal mode and issue details - opens links popup directly
-                self.modal = ModalState::LinkMenu { show_links_popup: true };
+                self.modal = ModalState::LinkMenu {
+                    show_links_popup: true,
+                };
             }
             Message::CloseLinksPopup => {
-                self.modal = ModalState::LinkMenu { show_links_popup: false };
+                self.modal = ModalState::LinkMenu {
+                    show_links_popup: false,
+                };
             }
             Message::OpenLinearLink => {
                 self.open_linear_link().await?;
@@ -454,7 +511,9 @@ impl App {
 
         // In search mode with active query, preserve score order (no grouping)
         let preserve_order = self.state.search_mode && !self.state.search_query.is_empty();
-        self.visual_items = self.state.build_visual_items(&self.filtered_indices, preserve_order);
+        self.visual_items = self
+            .state
+            .build_visual_items(&self.filtered_indices, preserve_order);
 
         // Ensure selection is valid
         if self.visual_items.is_empty() {
@@ -509,10 +568,27 @@ impl App {
     pub async fn refresh(&mut self) -> Result<()> {
         self.is_loading = true;
 
-        match integrations::fetch_workstreams(&self.config).await {
+        let (workstreams_res, projects_res, members_res, current_user_res) = tokio::join!(
+            integrations::fetch_workstreams(&self.config),
+            integrations::linear::fetch_projects(&self.config),
+            integrations::linear::fetch_team_members(&self.config),
+            integrations::linear::fetch_current_user_id(&self.config)
+        );
+
+        match workstreams_res {
             Ok(workstreams) => {
                 self.state.workstreams = workstreams;
                 self.state.last_refresh = Some(Utc::now());
+
+                if let Ok(projects) = projects_res {
+                    self.available_projects = projects;
+                }
+                if let Ok(members) = members_res {
+                    self.available_team_members = members;
+                }
+                if let Ok(user_id) = current_user_res {
+                    self.current_user_id = Some(user_id);
+                }
 
                 // Extract available cycles from workstreams
                 self.update_available_cycles();
@@ -524,6 +600,13 @@ impl App {
                 self.apply_filters();
                 self.rebuild_visual_items();
                 self.error_message = None;
+
+                if let Err(err) = cache::save_cache(
+                    &self.config,
+                    &cache::WorkstreamCache::new(self.state.workstreams.clone()),
+                ) {
+                    tracing::debug!("Failed to save cache: {}", err);
+                }
             }
             Err(e) => {
                 self.error_message = Some(format!("Refresh failed: {}", e));
@@ -549,6 +632,7 @@ impl App {
         self.is_loading = true;
         self.refresh_started_at = Some(Instant::now()); // Track for timeout detection
         self.shadow_workstreams.clear(); // Clear shadow for new data (keep main data!)
+        self.shadow_metadata = None;
         self.refresh_progress = Some(RefreshProgress {
             total_issues: 0,
             completed: 0,
@@ -583,10 +667,11 @@ impl App {
         }
 
         // Check if enough time has passed since last refresh
+        let cooldown = Duration::from_secs(self.config.polling.user_action_cooldown_secs);
         let should_refresh = match self.state.last_refresh {
             Some(last) => {
                 let elapsed = Utc::now().signed_duration_since(last);
-                elapsed.num_seconds() >= USER_ACTION_REFRESH_COOLDOWN.as_secs() as i64
+                elapsed.num_seconds() >= cooldown.as_secs() as i64
             }
             None => true, // Never refreshed, definitely should refresh
         };
@@ -612,6 +697,7 @@ impl App {
                 self.refresh_started_at = None;
                 self.refresh_progress = None;
                 self.shadow_workstreams.clear();
+                self.shadow_metadata = None;
                 self.error_message = Some("Refresh timed out".to_string());
                 return true;
             }
@@ -640,16 +726,31 @@ impl App {
                 }
                 RefreshResult::Workstream(ws) => {
                     // Add to shadow storage, not main data
-                    self.shadow_workstreams.push(ws);
+                    self.shadow_workstreams.push(*ws);
                     // Monotonic progress: always derived from received count
                     if let Some(ref mut p) = self.refresh_progress {
                         p.completed = self.shadow_workstreams.len();
                     }
                 }
+                RefreshResult::Metadata(metadata) => {
+                    self.shadow_metadata = Some(metadata);
+                }
                 RefreshResult::Complete => {
                     // Success: swap shadow with main data
                     std::mem::swap(&mut self.state.workstreams, &mut self.shadow_workstreams);
                     self.shadow_workstreams.clear();
+
+                    if let Some(metadata) = self.shadow_metadata.take() {
+                        if let Some(projects) = metadata.projects {
+                            self.available_projects = projects;
+                        }
+                        if let Some(members) = metadata.team_members {
+                            self.available_team_members = members;
+                        }
+                        if let Some(user_id) = metadata.current_user_id {
+                            self.current_user_id = Some(user_id);
+                        }
+                    }
 
                     self.is_loading = false;
                     self.refresh_started_at = None;
@@ -660,18 +761,27 @@ impl App {
                     self.apply_filters();
                     self.rebuild_visual_items();
                     self.error_message = None;
+
+                    if let Err(err) = cache::save_cache(
+                        &self.config,
+                        &cache::WorkstreamCache::new(self.state.workstreams.clone()),
+                    ) {
+                        tracing::debug!("Failed to save cache: {}", err);
+                    }
                     completed = true;
                     should_restore = false;
                 }
                 RefreshResult::Error(msg) => {
                     // Error: discard shadow, keep original data
                     self.shadow_workstreams.clear();
+                    self.shadow_metadata = None;
 
                     self.is_loading = false;
                     self.refresh_started_at = None;
                     self.refresh_progress = None;
                     // Include note about preserving previous data
-                    self.error_message = Some(format!("Refresh failed: {} (keeping previous data)", msg));
+                    self.error_message =
+                        Some(format!("Refresh failed: {} (keeping previous data)", msg));
                     completed = true;
                     should_restore = false;
                 }
@@ -683,6 +793,7 @@ impl App {
         if rx.is_closed() && !completed {
             tracing::warn!("Refresh channel closed unexpectedly");
             self.shadow_workstreams.clear();
+            self.shadow_metadata = None;
             self.is_loading = false;
             self.refresh_started_at = None;
             self.refresh_progress = None;
@@ -737,8 +848,15 @@ impl App {
 
             // Agent column
             if let Some(session) = &ws.agent_session {
-                let agent_text = session.status.label();
-                max_agent_len = max_agent_len.max(agent_text.width() + 2); // +2 for icon
+                let label_len = match session.status {
+                    crate::data::AgentStatus::Running => 3,         // RUN
+                    crate::data::AgentStatus::Idle => 4,            // IDLE
+                    crate::data::AgentStatus::WaitingForInput => 4, // WAIT
+                    crate::data::AgentStatus::Done => 4,            // DONE
+                    crate::data::AgentStatus::Error => 3,           // ERR
+                };
+                // "CC <icon><ascii> <label>"
+                max_agent_len = max_agent_len.max(label_len + 5);
             }
         }
 
@@ -768,10 +886,10 @@ impl App {
         // Distribute remaining space to ID, Title, PR, Agent
         // Title gets 50%, ID gets 20%, PR gets 15%, Agent gets 15%
         if available > 40 {
-            let title_width = (available * 50 / 100).min(50).max(15);
-            let id_width = (available * 20 / 100).min(15).max(6);
-            let pr_width = (available * 15 / 100).min(15).max(8);
-            let agent_width = (available * 15 / 100).min(12).max(8);
+            let title_width = (available * 50 / 100).clamp(15, 50);
+            let id_width = (available * 20 / 100).clamp(6, 15);
+            let pr_width = (available * 15 / 100).clamp(8, 15);
+            let agent_width = (available * 15 / 100).clamp(8, 12);
 
             self.column_widths[COL_IDX_ID] = id_width;
             self.column_widths[COL_IDX_TITLE] = title_width;
@@ -795,12 +913,37 @@ impl App {
         }
 
         // Sort by cycle number (most recent first)
-        self.available_cycles.sort_by(|a, b| b.number.cmp(&a.number));
+        self.available_cycles
+            .sort_by(|a, b| b.number.cmp(&a.number));
     }
 
     pub async fn on_tick(&mut self) {
         // Advance spinner animation
         self.tick_spinner();
+
+        // Periodic background refresh based on polling interval
+        if tokio::runtime::Handle::try_current().is_ok() && self.refresh_rx.is_none() {
+            let interval_secs = self
+                .config
+                .polling
+                .linear_interval_secs
+                .min(self.config.polling.github_interval_secs)
+                .min(self.config.polling.vercel_interval_secs);
+            let interval = Duration::from_secs(interval_secs);
+            if interval.as_secs() > 0 {
+                let should_refresh = match self.state.last_refresh {
+                    Some(last) => {
+                        let elapsed = Utc::now().signed_duration_since(last);
+                        elapsed.num_seconds() >= interval.as_secs() as i64
+                    }
+                    None => true,
+                };
+
+                if should_refresh {
+                    self.start_background_refresh();
+                }
+            }
+        }
     }
 
     pub fn enter_search(&mut self, search_all: bool) {
@@ -854,6 +997,18 @@ impl App {
             for (idx, _, search_match) in results {
                 if let Some(sm) = search_match {
                     self.search_excerpts.insert(idx, sm);
+                }
+            }
+
+            // Always include unlinked agent sessions (no identifier), even in search mode.
+            // Append them after scored results to keep relevance ordering intact.
+            let mut included: HashSet<usize> = self.filtered_indices.iter().copied().collect();
+            for (idx, ws) in self.state.workstreams.iter().enumerate() {
+                if ws.agent_session.is_some()
+                    && ws.linear_issue.identifier.is_empty()
+                    && included.insert(idx)
+                {
+                    self.filtered_indices.push(idx);
                 }
             }
         }
@@ -960,15 +1115,13 @@ impl App {
     pub fn toggle_section_fold(&mut self) {
         let section = match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
-            Some(VisualItem::Workstream(idx)) => {
-                self.state.workstreams.get(*idx).map(|ws| {
-                    if ws.agent_session.is_some() {
-                        SectionType::AgentSessions
-                    } else {
-                        SectionType::Issues
-                    }
-                })
-            }
+            Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
+                if ws.agent_session.is_some() {
+                    SectionType::AgentSessions
+                } else {
+                    SectionType::Issues
+                }
+            }),
             None => None,
         };
 
@@ -994,15 +1147,13 @@ impl App {
     pub fn selected_section(&self) -> Option<SectionType> {
         match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
-            Some(VisualItem::Workstream(idx)) => {
-                self.state.workstreams.get(*idx).map(|ws| {
-                    if ws.agent_session.is_some() {
-                        SectionType::AgentSessions
-                    } else {
-                        SectionType::Issues
-                    }
-                })
-            }
+            Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
+                if ws.agent_session.is_some() {
+                    SectionType::AgentSessions
+                } else {
+                    SectionType::Issues
+                }
+            }),
             None => None,
         }
     }
@@ -1109,7 +1260,9 @@ impl App {
 
     pub async fn open_linear_link(&self) -> Result<()> {
         if let Some(ws) = self.modal_issue() {
-            open_linear_url(&ws.linear_issue.url)?;
+            if !ws.linear_issue.url.is_empty() {
+                open_linear_url(&ws.linear_issue.url)?;
+            }
         }
         Ok(())
     }
@@ -1137,7 +1290,9 @@ impl App {
             self.modal = ModalState::None;
             self.clear_navigation();
         } else {
-            self.modal = ModalState::LinkMenu { show_links_popup: false };
+            self.modal = ModalState::LinkMenu {
+                show_links_popup: false,
+            };
             // Pre-select parent if exists, otherwise first child
             self.pre_select_in_link_menu();
             // Trigger optimistic background refresh when opening issue details
@@ -1205,7 +1360,8 @@ impl App {
     /// Navigate to next item in link menu (parent → children cycle)
     /// Uses sorted/filtered children count to match what's displayed in UI
     pub fn next_child_issue(&mut self) {
-        let has_parent = self.modal_issue()
+        let has_parent = self
+            .modal_issue()
             .map(|ws| ws.linear_issue.parent.is_some())
             .unwrap_or(false);
 
@@ -1244,7 +1400,8 @@ impl App {
     /// Navigate to previous item in link menu (children → parent cycle)
     /// Uses sorted/filtered children to match what's displayed in UI
     pub fn prev_child_issue(&mut self) {
-        let has_parent = self.modal_issue()
+        let has_parent = self
+            .modal_issue()
             .map(|ws| ws.linear_issue.parent.is_some())
             .unwrap_or(false);
 
@@ -1337,7 +1494,9 @@ impl App {
                         child.status.display_name(),
                         child.priority.label()
                     );
-                    fuzzy.multi_term_match(&self.modal_search_query, &text).is_some()
+                    fuzzy
+                        .multi_term_match(&self.modal_search_query, &text)
+                        .is_some()
                 })
                 .collect()
         };
@@ -1419,7 +1578,9 @@ impl App {
 
     pub fn close_description_modal(&mut self) {
         // Go back to link menu (issue details), not main view
-        self.modal = ModalState::LinkMenu { show_links_popup: false };
+        self.modal = ModalState::LinkMenu {
+            show_links_popup: false,
+        };
         self.description_scroll = 0;
     }
 
@@ -1545,6 +1706,12 @@ impl App {
         }
     }
 
+    pub fn clear_project_filters(&mut self) {
+        self.filter_projects.clear();
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
     pub fn toggle_assignee_filter(&mut self, idx: usize) {
         // Index 0: "Me", Index 1: "Unassigned", Rest: team members
         let id = match idx {
@@ -1568,6 +1735,12 @@ impl App {
         self.rebuild_visual_items();
     }
 
+    pub fn clear_assignee_filters(&mut self) {
+        self.filter_assignees.clear();
+        self.apply_filters();
+        self.rebuild_visual_items();
+    }
+
     pub fn clear_all_filters(&mut self) {
         self.filter_cycles.clear();
         self.filter_priorities.clear();
@@ -1587,7 +1760,12 @@ impl App {
             LinearPriority::Medium,
             LinearPriority::Low,
             LinearPriority::NoPriority,
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
+        // Show all projects/assignees
+        self.filter_projects.clear();
+        self.filter_assignees.clear();
         self.apply_filters();
         self.rebuild_visual_items();
     }
@@ -1612,10 +1790,17 @@ impl App {
 
     /// Apply filters to create filtered_indices
     pub fn apply_filters(&mut self) {
-        self.filtered_indices = self.state.workstreams
+        self.filtered_indices = self
+            .state
+            .workstreams
             .iter()
             .enumerate()
             .filter(|(_, ws)| {
+                // Always show unlinked agent sessions regardless of filters
+                if ws.agent_session.is_some() && ws.linear_issue.identifier.is_empty() {
+                    return true;
+                }
+
                 let status = ws.linear_issue.status;
 
                 // Completed filter (hide completed unless explicitly shown)
@@ -1624,7 +1809,9 @@ impl App {
                 }
 
                 // Canceled filter (hide canceled/duplicate unless explicitly shown)
-                if !self.show_canceled && (status == LinearStatus::Canceled || status == LinearStatus::Duplicate) {
+                if !self.show_canceled
+                    && (status == LinearStatus::Canceled || status == LinearStatus::Duplicate)
+                {
                     return false;
                 }
 
@@ -1641,10 +1828,10 @@ impl App {
                 }
 
                 // Priority filter (empty = show all)
-                if !self.filter_priorities.is_empty() {
-                    if !self.filter_priorities.contains(&ws.linear_issue.priority) {
-                        return false;
-                    }
+                if !self.filter_priorities.is_empty()
+                    && !self.filter_priorities.contains(&ws.linear_issue.priority)
+                {
+                    return false;
                 }
 
                 // Project filter (empty = show all)
@@ -1652,7 +1839,8 @@ impl App {
                     match &ws.linear_issue.project {
                         Some(project_name) => {
                             // Find project ID by name
-                            let project_id = self.available_projects
+                            let project_id = self
+                                .available_projects
                                 .iter()
                                 .find(|p| &p.name == project_name)
                                 .map(|p| &p.id);
@@ -1666,11 +1854,35 @@ impl App {
                 }
 
                 // Assignee filter (empty = show all)
-                // Note: We don't have assignee data in Workstream yet,
-                // this is a placeholder for when we add it
-                // if !self.filter_assignees.is_empty() {
-                //     // TODO: Filter by assignee when data is available
-                // }
+                if !self.filter_assignees.is_empty() {
+                    let assignee_id = ws.linear_issue.assignee_id.as_deref();
+                    let mut matched = false;
+
+                    // Unassigned
+                    if self.filter_assignees.contains("unassigned") && assignee_id.is_none() {
+                        matched = true;
+                    }
+
+                    // Me
+                    if self.filter_assignees.contains("me") {
+                        if let Some(me) = self.current_user_id.as_deref() {
+                            if assignee_id == Some(me) {
+                                matched = true;
+                            }
+                        }
+                    }
+
+                    // Specific user IDs
+                    if let Some(id) = assignee_id {
+                        if self.filter_assignees.contains(id) {
+                            matched = true;
+                        }
+                    }
+
+                    if !matched {
+                        return false;
+                    }
+                }
 
                 // Sub-issue filter (if disabled, hide issues that have a parent)
                 if !self.show_sub_issues && ws.linear_issue.parent.is_some() {

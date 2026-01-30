@@ -88,7 +88,12 @@ pub fn write_state(state: &ClaudeState) -> Result<()> {
 }
 
 /// Update a single session in the state file
-pub fn update_session(session_id: &str, path: &str, git_branch: Option<&str>, status: &str) -> Result<()> {
+pub fn update_session(
+    session_id: &str,
+    path: &str,
+    git_branch: Option<&str>,
+    status: &str,
+) -> Result<()> {
     let mut state = read_state().unwrap_or_default();
 
     let now = Utc::now().timestamp();

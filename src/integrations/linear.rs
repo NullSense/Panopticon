@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::data::{
-    LinearAttachment, LinearChildRef, LinearCycle, LinearIssue, LinearLabel,
-    LinearParentRef, LinearPriority, LinearStatus,
+    LinearAttachment, LinearChildRef, LinearCycle, LinearIssue, LinearLabel, LinearParentRef,
+    LinearPriority, LinearStatus,
 };
 use crate::integrations::{LinkedLinearIssue, HTTP_CLIENT};
 use anyhow::Result;
@@ -111,6 +111,7 @@ struct LabelNode {
 
 #[derive(Debug, Deserialize)]
 struct ProjectNode {
+    #[allow(dead_code)]
     id: String,
     name: String,
 }
@@ -351,13 +352,22 @@ async fn fetch_issues_paginated(
 }
 
 /// Build the GraphQL query for fetching issues
-fn build_issues_query(limit: usize, cursor: Option<&str>, updated_since: Option<DateTime<Utc>>) -> String {
+fn build_issues_query(
+    limit: usize,
+    cursor: Option<&str>,
+    updated_since: Option<DateTime<Utc>>,
+) -> String {
     let after_clause = cursor
         .map(|c| format!(r#", after: "{}""#, c))
         .unwrap_or_default();
 
     let filter_clause = updated_since
-        .map(|ts| format!(r#", filter: {{ updatedAt: {{ gte: "{}" }} }}"#, ts.to_rfc3339()))
+        .map(|ts| {
+            format!(
+                r#", filter: {{ updatedAt: {{ gte: "{}" }} }}"#,
+                ts.to_rfc3339()
+            )
+        })
         .unwrap_or_default();
 
     format!(
@@ -409,10 +419,7 @@ pub async fn fetch_projects(config: &Config) -> Result<Vec<ProjectInfo>> {
 
     let body: GraphQLResponse<ProjectsData> = response.json().await?;
 
-    let projects = body
-        .data
-        .map(|d| d.projects.nodes)
-        .unwrap_or_default();
+    let projects = body.data.map(|d| d.projects.nodes).unwrap_or_default();
 
     Ok(projects)
 }
@@ -444,10 +451,7 @@ pub async fn fetch_team_members(config: &Config) -> Result<Vec<TeamMemberInfo>> 
 
     let body: GraphQLResponse<TeamMembersData> = response.json().await?;
 
-    let members = body
-        .data
-        .map(|d| d.users.nodes)
-        .unwrap_or_default();
+    let members = body.data.map(|d| d.users.nodes).unwrap_or_default();
 
     Ok(members)
 }
@@ -567,6 +571,11 @@ fn parse_issue_node(node: IssueNode) -> Option<LinkedLinearIssue> {
         labels: parse_labels(node.labels),
         project: node.project.map(|p| p.name),
         team: node.team.map(|t| t.name),
+        assignee_id: node.assignee.as_ref().map(|a| a.id.clone()),
+        assignee_name: node
+            .assignee
+            .as_ref()
+            .map(|a| a.display_name.clone().unwrap_or_else(|| a.name.clone())),
         estimate: node.estimate.map(|e| e as f32),
         attachments: parse_attachments(&node.attachments),
         parent: parse_parent(node.parent),

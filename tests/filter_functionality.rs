@@ -49,6 +49,8 @@ fn make_workstream_with_project(id: &str, identifier: &str, project: Option<&str
             labels: Vec::new(),
             project: project.map(|p| p.to_string()),
             team: None,
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             created_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),

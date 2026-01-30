@@ -40,10 +40,7 @@ mod hook_generation {
             hook.get("hooks").is_some(),
             "Generated hook should have 'hooks' field"
         );
-        assert!(
-            hook["hooks"].is_array(),
-            "'hooks' field should be an array"
-        );
+        assert!(hook["hooks"].is_array(), "'hooks' field should be an array");
         assert_eq!(
             hook["hooks"].as_array().unwrap().len(),
             1,
@@ -181,11 +178,17 @@ mod settings_operations {
     #[test]
     fn test_inject_creates_settings_if_missing() {
         let env = TestClaudeEnv::new();
-        assert!(!env.settings_exists(), "Settings should not exist initially");
+        assert!(
+            !env.settings_exists(),
+            "Settings should not exist initially"
+        );
 
         inject_hooks_to_path(&env.settings_path).expect("inject should succeed");
 
-        assert!(env.settings_exists(), "Settings should exist after injection");
+        assert!(
+            env.settings_exists(),
+            "Settings should exist after injection"
+        );
     }
 
     #[test]

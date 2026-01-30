@@ -119,7 +119,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // Search
     KeyBinding {
         modes: &[Mode::Normal],
@@ -140,7 +139,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // Actions
     KeyBinding {
         modes: &[Mode::Normal],
@@ -182,7 +180,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // Modals
     KeyBinding {
         modes: &[Mode::Normal],
@@ -216,7 +213,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // Application
     KeyBinding {
         modes: &[Mode::Normal],
@@ -226,7 +222,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // SEARCH MODE
     // ═══════════════════════════════════════════════════════════════════════════
@@ -270,7 +265,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // DESCRIPTION MODAL
     // ═══════════════════════════════════════════════════════════════════════════
@@ -339,7 +333,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // HELP MODAL
     // ═══════════════════════════════════════════════════════════════════════════
@@ -370,7 +363,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // RESIZE MODE
     // ═══════════════════════════════════════════════════════════════════════════
@@ -418,7 +410,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // SORT MENU
     // ═══════════════════════════════════════════════════════════════════════════
@@ -438,7 +429,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // FILTER MENU
     // ═══════════════════════════════════════════════════════════════════════════
@@ -538,7 +528,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // LINK MENU (Issue Details)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -610,7 +599,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // LINKS POPUP (nested within link menu)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -657,7 +645,6 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: false,
     },
-
     // ═══════════════════════════════════════════════════════════════════════════
     // MODAL SEARCH (within link menu)
     // ═══════════════════════════════════════════════════════════════════════════

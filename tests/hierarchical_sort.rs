@@ -4,10 +4,11 @@
 //! with children always appearing directly after their parent regardless
 //! of the sort criteria (priority, status, etc.).
 
+#![allow(clippy::field_reassign_with_default)]
+
 use chrono::{TimeZone, Utc};
 use panopticon::data::{
-    AppState, LinearIssue, LinearParentRef, LinearPriority, LinearStatus,
-    SortMode, Workstream,
+    AppState, LinearIssue, LinearParentRef, LinearPriority, LinearStatus, SortMode, Workstream,
 };
 
 /// Create a minimal workstream for testing
@@ -31,6 +32,8 @@ fn make_workstream(
             labels: Vec::new(),
             project: None,
             team: None,
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             created_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -46,7 +49,7 @@ fn make_workstream(
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
-            stale: false,
+        stale: false,
     }
 }
 
@@ -68,7 +71,13 @@ fn test_child_appears_after_parent_when_sorted_by_priority() {
     // Without hierarchical sort, Child would appear first (Urgent < Low)
     // With hierarchical sort, Parent must appear first, then Child
     let parent = make_workstream("1", "TEST-1", LinearPriority::Low, None, None);
-    let child = make_workstream("2", "TEST-2", LinearPriority::Urgent, Some("1"), Some("TEST-1"));
+    let child = make_workstream(
+        "2",
+        "TEST-2",
+        LinearPriority::Urgent,
+        Some("1"),
+        Some("TEST-1"),
+    );
 
     let mut state = AppState::default();
     state.workstreams = vec![child.clone(), parent.clone()]; // Child added first
@@ -88,9 +97,27 @@ fn test_child_appears_after_parent_when_sorted_by_priority() {
 fn test_multiple_children_sorted_under_parent() {
     // Parent with 3 children, children should be sorted by priority under parent
     let parent = make_workstream("1", "TEST-1", LinearPriority::Medium, None, None);
-    let child_low = make_workstream("2", "TEST-2", LinearPriority::Low, Some("1"), Some("TEST-1"));
-    let child_urgent = make_workstream("3", "TEST-3", LinearPriority::Urgent, Some("1"), Some("TEST-1"));
-    let child_high = make_workstream("4", "TEST-4", LinearPriority::High, Some("1"), Some("TEST-1"));
+    let child_low = make_workstream(
+        "2",
+        "TEST-2",
+        LinearPriority::Low,
+        Some("1"),
+        Some("TEST-1"),
+    );
+    let child_urgent = make_workstream(
+        "3",
+        "TEST-3",
+        LinearPriority::Urgent,
+        Some("1"),
+        Some("TEST-1"),
+    );
+    let child_high = make_workstream(
+        "4",
+        "TEST-4",
+        LinearPriority::High,
+        Some("1"),
+        Some("TEST-1"),
+    );
 
     let mut state = AppState::default();
     state.workstreams = vec![child_low, parent, child_high, child_urgent]; // Random order
@@ -110,9 +137,27 @@ fn test_multiple_parent_trees_sorted() {
     // Parents should be sorted by priority, children under each parent also sorted
     let parent1 = make_workstream("1", "TEST-1", LinearPriority::Low, None, None);
     let parent2 = make_workstream("2", "TEST-2", LinearPriority::Urgent, None, None);
-    let child1a = make_workstream("3", "TEST-3", LinearPriority::High, Some("1"), Some("TEST-1"));
-    let child1b = make_workstream("4", "TEST-4", LinearPriority::Medium, Some("1"), Some("TEST-1"));
-    let child2a = make_workstream("5", "TEST-5", LinearPriority::Low, Some("2"), Some("TEST-2"));
+    let child1a = make_workstream(
+        "3",
+        "TEST-3",
+        LinearPriority::High,
+        Some("1"),
+        Some("TEST-1"),
+    );
+    let child1b = make_workstream(
+        "4",
+        "TEST-4",
+        LinearPriority::Medium,
+        Some("1"),
+        Some("TEST-1"),
+    );
+    let child2a = make_workstream(
+        "5",
+        "TEST-5",
+        LinearPriority::Low,
+        Some("2"),
+        Some("TEST-2"),
+    );
 
     let mut state = AppState::default();
     state.workstreams = vec![child1b, parent1, child2a, parent2, child1a];
@@ -135,8 +180,20 @@ fn test_multiple_parent_trees_sorted() {
 fn test_three_level_nesting() {
     // Grandparent -> Parent -> Child
     let grandparent = make_workstream("1", "TEST-1", LinearPriority::Low, None, None);
-    let parent = make_workstream("2", "TEST-2", LinearPriority::Urgent, Some("1"), Some("TEST-1"));
-    let child = make_workstream("3", "TEST-3", LinearPriority::High, Some("2"), Some("TEST-2"));
+    let parent = make_workstream(
+        "2",
+        "TEST-2",
+        LinearPriority::Urgent,
+        Some("1"),
+        Some("TEST-1"),
+    );
+    let child = make_workstream(
+        "3",
+        "TEST-3",
+        LinearPriority::High,
+        Some("2"),
+        Some("TEST-2"),
+    );
 
     let mut state = AppState::default();
     state.workstreams = vec![child, grandparent, parent]; // Random order
@@ -208,14 +265,26 @@ fn test_five_level_with_siblings_at_each_level() {
     // └── X1 (Medium)
 
     let root1 = make_workstream("r1", "ROOT-1", LinearPriority::Low, None, None);
-    let a1 = make_workstream("a1", "A1", LinearPriority::Urgent, Some("r1"), Some("ROOT-1"));
+    let a1 = make_workstream(
+        "a1",
+        "A1",
+        LinearPriority::Urgent,
+        Some("r1"),
+        Some("ROOT-1"),
+    );
     let a2 = make_workstream("a2", "A2", LinearPriority::High, Some("r1"), Some("ROOT-1"));
     let b1 = make_workstream("b1", "B1", LinearPriority::High, Some("a1"), Some("A1"));
     let b2 = make_workstream("b2", "B2", LinearPriority::Low, Some("a1"), Some("A1"));
     let c1 = make_workstream("c1", "C1", LinearPriority::Medium, Some("b1"), Some("B1"));
     let d1 = make_workstream("d1", "D1", LinearPriority::Low, Some("c1"), Some("C1"));
     let root2 = make_workstream("r2", "ROOT-2", LinearPriority::Urgent, None, None);
-    let x1 = make_workstream("x1", "X1", LinearPriority::Medium, Some("r2"), Some("ROOT-2"));
+    let x1 = make_workstream(
+        "x1",
+        "X1",
+        LinearPriority::Medium,
+        Some("r2"),
+        Some("ROOT-2"),
+    );
 
     let mut state = AppState::default();
     // Shuffle order completely
@@ -244,7 +313,13 @@ fn test_five_level_with_siblings_at_each_level() {
 fn test_orphaned_child_treated_as_root() {
     // Child whose parent is not in the workstreams list (filtered out, etc.)
     // Should be treated as a root
-    let orphan = make_workstream("2", "TEST-2", LinearPriority::Urgent, Some("1"), Some("TEST-1"));
+    let orphan = make_workstream(
+        "2",
+        "TEST-2",
+        LinearPriority::Urgent,
+        Some("1"),
+        Some("TEST-1"),
+    );
     let root = make_workstream("3", "TEST-3", LinearPriority::Low, None, None);
 
     let mut state = AppState::default();
@@ -305,8 +380,20 @@ fn test_all_roots_no_children() {
 #[test]
 fn test_hierarchical_sort_by_identifier() {
     let parent = make_workstream("1", "ZZZ-1", LinearPriority::Medium, None, None);
-    let child1 = make_workstream("2", "AAA-2", LinearPriority::Medium, Some("1"), Some("ZZZ-1"));
-    let child2 = make_workstream("3", "MMM-3", LinearPriority::Medium, Some("1"), Some("ZZZ-1"));
+    let child1 = make_workstream(
+        "2",
+        "AAA-2",
+        LinearPriority::Medium,
+        Some("1"),
+        Some("ZZZ-1"),
+    );
+    let child2 = make_workstream(
+        "3",
+        "MMM-3",
+        LinearPriority::Medium,
+        Some("1"),
+        Some("ZZZ-1"),
+    );
 
     let mut state = AppState::default();
     state.workstreams = vec![child2, parent, child1];
@@ -331,8 +418,20 @@ fn test_dre_372_regression() {
     //
     // Correct hierarchy: DRE-372 is parent, DRE-373/374/etc are children
     let dre_372 = make_workstream("372", "DRE-372", LinearPriority::High, None, None);
-    let dre_373 = make_workstream("373", "DRE-373", LinearPriority::Urgent, Some("372"), Some("DRE-372"));
-    let dre_374 = make_workstream("374", "DRE-374", LinearPriority::Medium, Some("372"), Some("DRE-372"));
+    let dre_373 = make_workstream(
+        "373",
+        "DRE-373",
+        LinearPriority::Urgent,
+        Some("372"),
+        Some("DRE-372"),
+    );
+    let dre_374 = make_workstream(
+        "374",
+        "DRE-374",
+        LinearPriority::Medium,
+        Some("372"),
+        Some("DRE-372"),
+    );
 
     let mut state = AppState::default();
     // Add in wrong order - if sorting is broken, DRE-373 would appear first due to Urgent priority

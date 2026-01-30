@@ -95,7 +95,11 @@ fn test_uppercase_r_with_shift_enters_resize_mode() {
     let key = key_event_shift(KeyCode::Char('R'));
     let msg = dispatch(&app, &mut input, key);
 
-    assert_eq!(msg, Message::ToggleResizeMode, "Shift+R should enter resize mode");
+    assert_eq!(
+        msg,
+        Message::ToggleResizeMode,
+        "Shift+R should enter resize mode"
+    );
 }
 
 #[test]

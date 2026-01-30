@@ -27,7 +27,10 @@ fn test_parse_issue_with_attachments() {
     assert!(result.is_some(), "Should parse issue with attachments");
 
     let linked = result.unwrap();
-    assert_eq!(linked.linked_pr_url, Some("https://github.com/org/repo/pull/123".to_string()));
+    assert_eq!(
+        linked.linked_pr_url,
+        Some("https://github.com/org/repo/pull/123".to_string())
+    );
     assert_eq!(linked.issue.attachments.len(), 1);
     assert_eq!(linked.issue.attachments[0].title, "Design Doc");
 }

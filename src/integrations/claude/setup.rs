@@ -168,10 +168,7 @@ pub fn inject_hooks_to_path(settings_path: &Path) -> Result<()> {
                             backup_err
                         );
                     } else {
-                        tracing::warn!(
-                            "Backed up invalid settings to {}",
-                            backup_path.display()
-                        );
+                        tracing::warn!("Backed up invalid settings to {}", backup_path.display());
                     }
                     tracing::warn!(
                         "Existing settings.json is invalid JSON ({}), starting fresh",
@@ -226,8 +223,8 @@ pub fn inject_hooks_to_path(settings_path: &Path) -> Result<()> {
 
 /// Inject our hooks into Claude's settings
 pub fn inject_hooks() -> Result<()> {
-    let path = claude_settings_path()
-        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let path =
+        claude_settings_path().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     inject_hooks_to_path(&path)
 }
 

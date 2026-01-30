@@ -78,7 +78,7 @@ fn default_linear_fetch_limit() -> usize {
 // GitHub Configuration
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GithubConfig {
     /// GitHub username (for filtering PRs)
     #[serde(default)]
@@ -89,20 +89,11 @@ pub struct GithubConfig {
     pub organizations: Vec<String>,
 }
 
-impl Default for GithubConfig {
-    fn default() -> Self {
-        Self {
-            username: None,
-            organizations: Vec::new(),
-        }
-    }
-}
-
 // =============================================================================
 // Vercel Configuration
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VercelConfig {
     /// Team ID or slug
     #[serde(default)]
@@ -111,15 +102,6 @@ pub struct VercelConfig {
     /// Project IDs to monitor
     #[serde(default)]
     pub project_ids: Vec<String>,
-}
-
-impl Default for VercelConfig {
-    fn default() -> Self {
-        Self {
-            team_id: None,
-            project_ids: Vec::new(),
-        }
-    }
 }
 
 // =============================================================================
@@ -325,6 +307,12 @@ pub fn default_config_path() -> Result<PathBuf> {
 
 pub fn cache_path(config: &Config) -> Result<PathBuf> {
     let cache_file = &config.cache.file;
+    if cache_file == "~" || cache_file.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            let suffix = cache_file.trim_start_matches("~/");
+            return Ok(home.join(suffix));
+        }
+    }
     if Path::new(cache_file).is_absolute() {
         Ok(PathBuf::from(cache_file))
     } else {

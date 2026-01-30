@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Test utilities for Claude settings.json testing
 
 use serde_json::{json, Value};

@@ -1,7 +1,10 @@
-use super::App;
 use super::keybindings::{generate_footer_hints, generate_keyboard_shortcuts, Mode};
 use super::search::FuzzySearch;
-use crate::data::{AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SectionType, SortMode, VercelStatus, VisualItem};
+use super::App;
+use crate::data::{
+    AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SectionType,
+    SortMode, VercelStatus, VisualItem,
+};
 use pulldown_cmark::{Event, Parser, Tag};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -20,69 +23,76 @@ use super::app::{
 // Nerd Font icons
 mod icons {
     // Column header icons
-    pub const HEADER_STATUS: &str = "◐";      // Status indicator
-    pub const HEADER_ID: &str = "";          // nf-cod-issue_opened (ticket)
-    pub const HEADER_PR: &str = "";          // nf-dev-github_badge
-    pub const HEADER_AGENT: &str = "󰚩";       // nf-md-robot
-    pub const HEADER_VERCEL: &str = "▲";      // Vercel triangle
-    pub const HEADER_TIME: &str = "󰥔";        // nf-md-clock_outline
+    pub const HEADER_STATUS: &str = "◐"; // Status indicator
+    pub const HEADER_ID: &str = ""; // nf-cod-issue_opened (ticket)
+    pub const HEADER_PR: &str = ""; // nf-dev-github_badge
+    pub const HEADER_AGENT: &str = "󰚩"; // nf-md-robot
+    pub const HEADER_VERCEL: &str = "▲"; // Vercel triangle
+    pub const HEADER_TIME: &str = "󰥔"; // nf-md-clock_outline
 
     // Priority icons (signal bar style)
-    pub const PRIORITY_NONE: &str = "╌╌╌";    // Gray dashes - no priority
-    pub const PRIORITY_URGENT: &str = "⚠!";   // Warning + exclaim - urgent (will have orange bg)
-    pub const PRIORITY_HIGH: &str = "▮▮▮";    // 3 bars - high
-    pub const PRIORITY_MEDIUM: &str = "▮▮╌";  // 2 bars - medium
-    pub const PRIORITY_LOW: &str = "▮╌╌";     // 1 bar - low
+    pub const PRIORITY_NONE: &str = "╌╌╌"; // Gray dashes - no priority
+    pub const PRIORITY_URGENT: &str = "⚠!"; // Warning + exclaim - urgent (will have orange bg)
+    pub const PRIORITY_HIGH: &str = "▮▮▮"; // 3 bars - high
+    pub const PRIORITY_MEDIUM: &str = "▮▮╌"; // 2 bars - medium
+    pub const PRIORITY_LOW: &str = "▮╌╌"; // 1 bar - low
 
     // Linear Status - Fractional circles (like Linear app)
-    pub const STATUS_TRIAGE: &str = "◇";      // Diamond outline - needs triage
-    pub const STATUS_BACKLOG: &str = "○";     // Empty circle
-    pub const STATUS_TODO: &str = "◔";        // 1/4 filled
+    pub const STATUS_TRIAGE: &str = "◇"; // Diamond outline - needs triage
+    pub const STATUS_BACKLOG: &str = "○"; // Empty circle
+    pub const STATUS_TODO: &str = "◔"; // 1/4 filled
     pub const STATUS_IN_PROGRESS: &str = "◑"; // 1/2 filled
-    pub const STATUS_IN_REVIEW: &str = "◕";   // 3/4 filled
-    pub const STATUS_DONE: &str = "●";        // Full circle
-    pub const STATUS_CANCELED: &str = "⊘";    // Slashed circle
-    pub const STATUS_DUPLICATE: &str = "◈";   // Diamond fill - duplicate
+    pub const STATUS_IN_REVIEW: &str = "◕"; // 3/4 filled
+    pub const STATUS_DONE: &str = "●"; // Full circle
+    pub const STATUS_CANCELED: &str = "⊘"; // Slashed circle
+    pub const STATUS_DUPLICATE: &str = "◈"; // Diamond fill - duplicate
 
     // PR Status
-    pub const PR_DRAFT: &str = "󰏫";      // nf-md-file_document_edit_outline
-    pub const PR_OPEN: &str = "󰐊";       // nf-md-play
-    pub const PR_REVIEW: &str = "󰈈";     // nf-md-eye
-    pub const PR_CHANGES: &str = "󰏭";    // nf-md-file_document_alert
-    pub const PR_APPROVED: &str = "󰄬";   // nf-md-check
-    pub const PR_MERGED: &str = "󰜛";     // nf-md-source_merge
-    pub const PR_CLOSED: &str = "󰅖";     // nf-md-close
+    pub const PR_DRAFT: &str = "󰏫"; // nf-md-file_document_edit_outline
+    pub const PR_OPEN: &str = "󰐊"; // nf-md-play
+    pub const PR_REVIEW: &str = "󰈈"; // nf-md-eye
+    pub const PR_CHANGES: &str = "󰏭"; // nf-md-file_document_alert
+    pub const PR_APPROVED: &str = "󰄬"; // nf-md-check
+    pub const PR_MERGED: &str = "󰜛"; // nf-md-source_merge
+    pub const PR_CLOSED: &str = "󰅖"; // nf-md-close
 
-    // Agent Status
-    pub const AGENT_RUNNING: &str = "󰐊";  // nf-md-play
-    pub const AGENT_IDLE: &str = "󰏤";     // nf-md-pause
-    pub const AGENT_WAITING: &str = "󰋗";  // nf-md-help_circle
-    pub const AGENT_DONE: &str = "󰄬";     // nf-md-check
-    pub const AGENT_ERROR: &str = "󰅚";    // nf-md-close_circle
-    pub const AGENT_NONE: &str = "󰝦";     // nf-md-minus_circle_outline
+    // Agent Status (Claude-like)
+    pub const AGENT_RUNNING: &str = "󰇌"; // nf-md-brain
+    pub const AGENT_IDLE: &str = "󰏤"; // nf-md-pause
+    pub const AGENT_WAITING: &str = "󰁤"; // nf-md-keyboard
+    pub const AGENT_DONE: &str = "󰄬"; // nf-md-check
+    pub const AGENT_ERROR: &str = "󰅚"; // nf-md-close_circle
+    pub const AGENT_NONE: &str = "󰝦"; // nf-md-minus_circle_outline
+
+    // Agent ASCII fallbacks (single-char)
+    pub const AGENT_RUNNING_ASCII: char = '*';
+    pub const AGENT_IDLE_ASCII: char = '-';
+    pub const AGENT_WAITING_ASCII: char = '?';
+    pub const AGENT_DONE_ASCII: char = 'v';
+    pub const AGENT_ERROR_ASCII: char = '!';
 
     // Vercel Status
-    pub const VERCEL_READY: &str = "󰄬";    // nf-md-check
+    pub const VERCEL_READY: &str = "󰄬"; // nf-md-check
     pub const VERCEL_BUILDING: &str = "󰑮"; // nf-md-cog_sync
-    pub const VERCEL_QUEUED: &str = "󰔟";   // nf-md-clock_outline
-    pub const VERCEL_ERROR: &str = "󰅚";    // nf-md-close_circle
-    pub const VERCEL_NONE: &str = "󰝦";     // nf-md-minus_circle_outline
+    pub const VERCEL_QUEUED: &str = "󰔟"; // nf-md-clock_outline
+    pub const VERCEL_ERROR: &str = "󰅚"; // nf-md-close_circle
+    pub const VERCEL_NONE: &str = "󰝦"; // nf-md-minus_circle_outline
 
     // Section indicators
     pub const EXPANDED: &str = "▼";
     pub const COLLAPSED: &str = "▶";
 
     // Issue detail category icons
-    pub const ICON_TEAM: &str = "󰏬";       // nf-md-account_group
-    pub const ICON_PROJECT: &str = "󰈙";    // nf-md-folder
-    pub const ICON_CYCLE: &str = "󰃰";      // nf-md-calendar_clock
-    pub const ICON_ESTIMATE: &str = "󰎚";   // nf-md-numeric
-    pub const ICON_LABELS: &str = "󰌕";     // nf-md-tag_multiple
-    pub const ICON_CREATED: &str = "󰃭";    // nf-md-calendar_plus
-    pub const ICON_UPDATED: &str = "󰦒";    // nf-md-calendar_edit
-    pub const ICON_DOCUMENT: &str = "󰈚";   // nf-md-file_document
-    pub const ICON_PARENT: &str = "󰁝";     // nf-md-arrow_up_bold
-    pub const ICON_CHILDREN: &str = "󰁅";   // nf-md-arrow_down_bold
+    pub const ICON_TEAM: &str = "󰏬"; // nf-md-account_group
+    pub const ICON_PROJECT: &str = "󰈙"; // nf-md-folder
+    pub const ICON_CYCLE: &str = "󰃰"; // nf-md-calendar_clock
+    pub const ICON_ESTIMATE: &str = "󰎚"; // nf-md-numeric
+    pub const ICON_LABELS: &str = "󰌕"; // nf-md-tag_multiple
+    pub const ICON_CREATED: &str = "󰃭"; // nf-md-calendar_plus
+    pub const ICON_UPDATED: &str = "󰦒"; // nf-md-calendar_edit
+    pub const ICON_DOCUMENT: &str = "󰈚"; // nf-md-file_document
+    pub const ICON_PARENT: &str = "󰁝"; // nf-md-arrow_up_bold
+    pub const ICON_CHILDREN: &str = "󰁅"; // nf-md-arrow_down_bold
 }
 
 const PREFIX: &str = "  ";
@@ -196,6 +206,25 @@ fn compute_column_layout(preferred: &[usize; NUM_COLUMNS], available_width: u16)
     }
 }
 
+fn title_column_offset(layout: &ColumnLayout) -> usize {
+    let mut width = PREFIX_WIDTH;
+    let mut first = true;
+    for idx in [COL_IDX_STATUS, COL_IDX_PRIORITY, COL_IDX_ID] {
+        if layout.is_visible(idx) {
+            if !first {
+                width += SEP_WIDTH;
+            } else {
+                first = false;
+            }
+            width += layout.widths[idx];
+        }
+    }
+    if layout.is_visible(COL_IDX_TITLE) && !first {
+        width += SEP_WIDTH;
+    }
+    width
+}
+
 fn min_total_width(visible: &[bool; NUM_COLUMNS]) -> usize {
     let visible_count = visible.iter().filter(|v| **v).count();
     if visible_count == 0 {
@@ -269,7 +298,11 @@ fn fit_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Line<'a> {
         return Line::from(Vec::<Span>::new());
     }
 
-    let Line { spans, alignment, style } = line;
+    let Line {
+        spans,
+        alignment,
+        style,
+    } = line;
     let mut out: Vec<Span<'a>> = Vec::new();
     let mut used = 0usize;
 
@@ -292,7 +325,11 @@ fn fit_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Line<'a> {
         }
     }
 
-    Line { spans: out, alignment, style }
+    Line {
+        spans: out,
+        alignment,
+        style,
+    }
 }
 
 fn line_display_width<'a>(line: &Line<'a>) -> usize {
@@ -336,7 +373,7 @@ fn fit_lines_to_area<'a>(lines: Vec<Line<'a>>, inner: Rect, keep_bottom: usize) 
     let mut out: Vec<Line<'a>> = Vec::with_capacity(height);
 
     if top_space > 0 {
-        let top_take = if top_space > 1 { top_space - 1 } else { 0 };
+        let top_take = top_space.saturating_sub(1);
         if top_take > 0 {
             out.extend(fitted.drain(..top_take));
         }
@@ -430,8 +467,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             ws.agent_session
                 .as_ref()
                 .map(|s| {
-                    s.status == AgentStatus::Running
-                        || s.status == AgentStatus::WaitingForInput
+                    s.status == AgentStatus::Running || s.status == AgentStatus::WaitingForInput
                 })
                 .unwrap_or(false)
         })
@@ -456,12 +492,23 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let text = if app.state.search_mode {
         Line::from(vec![
             Span::styled("󰍉 Search: ", Style::default().fg(Color::Yellow)),
-            Span::styled(&app.state.search_query, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &app.state.search_query,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ])
     } else if app.is_loading {
         let progress_text = if let Some(ref p) = app.refresh_progress {
             if p.total_issues > 0 {
-                format!("{} {} [{}/{}]", app.spinner_char(), p.current_stage, p.completed, p.total_issues)
+                format!(
+                    "{} {} [{}/{}]",
+                    app.spinner_char(),
+                    p.current_stage,
+                    p.completed,
+                    p.total_issues
+                )
             } else {
                 format!("{} {}", app.spinner_char(), p.current_stage)
             }
@@ -470,19 +517,31 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         };
         Line::from(vec![
             Span::styled("󰣖 ", Style::default().fg(Color::Cyan)),
-            Span::styled("Panopticon ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Panopticon ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(progress_text, Style::default().fg(Color::Cyan)),
         ])
     } else {
         Line::from(vec![
             Span::styled("󰣖 ", Style::default().fg(Color::Cyan)),
-            Span::styled("Panopticon ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("[{} active]", active_count), Style::default().fg(Color::Green)),
+            Span::styled(
+                "Panopticon ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("[{} active]", active_count),
+                Style::default().fg(Color::Green),
+            ),
         ])
     };
 
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center);
+    let paragraph = Paragraph::new(text).alignment(Alignment::Center);
 
     f.render_widget(paragraph, inner);
 }
@@ -497,10 +556,15 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
 
     // Column header with icons and labels
-    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let header_dim = Style::default().fg(Color::DarkGray);
     let sep_style = Style::default().fg(Color::DarkGray);
-    let highlight_style = Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let highlight_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
 
     // Helper to get style for a column (highlighted if selected in resize mode)
     let col_style = |idx: usize, base: Style| -> Style {
@@ -592,19 +656,25 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
         match item {
             VisualItem::SectionHeader(section_type) => {
                 let is_collapsed = app.state.collapsed_sections.contains(section_type);
-                let indicator = if is_collapsed { icons::COLLAPSED } else { icons::EXPANDED };
+                let indicator = if is_collapsed {
+                    icons::COLLAPSED
+                } else {
+                    icons::EXPANDED
+                };
 
                 // Count items in this section
-                let count = app.state.workstreams.iter()
-                    .filter(|ws| {
-                        let in_section = match section_type {
-                            SectionType::AgentSessions => ws.agent_session.is_some(),
-                            SectionType::Issues => ws.agent_session.is_none(),
-                        };
-                        in_section
+                let count = app
+                    .state
+                    .workstreams
+                    .iter()
+                    .filter(|ws| match section_type {
+                        SectionType::AgentSessions => ws.agent_session.is_some(),
+                        SectionType::Issues => ws.agent_session.is_none(),
                     })
                     .filter(|ws| {
-                        app.state.workstreams.iter()
+                        app.state
+                            .workstreams
+                            .iter()
                             .position(|w| w.linear_issue.id == ws.linear_issue.id)
                             .map(|idx| app.filtered_indices.contains(&idx))
                             .unwrap_or(false)
@@ -613,11 +683,19 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
 
                 // Section-specific styling
                 let (icon, style) = match section_type {
-                    SectionType::AgentSessions => (icons::HEADER_AGENT, Style::default().fg(Color::Cyan)),
+                    SectionType::AgentSessions => {
+                        (icons::HEADER_AGENT, Style::default().fg(Color::Cyan))
+                    }
                     SectionType::Issues => (icons::HEADER_ID, Style::default().fg(Color::White)),
                 };
 
-                let header = format!("{} {} {} ({})", indicator, icon, section_type.display_name(), count);
+                let header = format!(
+                    "{} {} {} ({})",
+                    indicator,
+                    icon,
+                    section_type.display_name(),
+                    count
+                );
                 let base_style = style.add_modifier(Modifier::BOLD);
                 let final_style = if is_selected {
                     base_style.bg(Color::DarkGray)
@@ -625,7 +703,10 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     base_style
                 };
 
-                items.push(ListItem::new(Line::from(vec![Span::styled(header, final_style)])));
+                items.push(ListItem::new(Line::from(vec![Span::styled(
+                    header,
+                    final_style,
+                )])));
             }
             VisualItem::Workstream(ws_idx) => {
                 if let Some(ws) = app.state.workstreams.get(*ws_idx) {
@@ -644,7 +725,9 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                             Span::styled("▲ ", Style::default().fg(Color::DarkGray)),
                             Span::styled(
                                 format!("\"{}\"", &search_match.excerpt),
-                                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC),
                             ),
                         ]);
                         items.push(ListItem::new(excerpt_line));
@@ -658,8 +741,8 @@ fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
 
     // Use ListState for automatic scroll-to-selection
     // Add 2 to account for header + separator lines
-    let mut list_state = ratatui::widgets::ListState::default()
-        .with_selected(Some(app.visual_selected + 2));
+    let mut list_state =
+        ratatui::widgets::ListState::default().with_selected(Some(app.visual_selected + 2));
 
     f.render_stateful_widget(list, inner, &mut list_state);
 }
@@ -683,7 +766,11 @@ struct WorkstreamRowBuilder<'a> {
 }
 
 impl<'a> WorkstreamRowBuilder<'a> {
-    fn new(ws: &'a crate::data::Workstream, layout: &'a ColumnLayout, search_query: Option<&'a str>) -> Self {
+    fn new(
+        ws: &'a crate::data::Workstream,
+        layout: &'a ColumnLayout,
+        search_query: Option<&'a str>,
+    ) -> Self {
         Self {
             ws,
             layout,
@@ -693,13 +780,18 @@ impl<'a> WorkstreamRowBuilder<'a> {
     }
 
     fn build(self, selected: bool) -> ListItem<'static> {
-        let line = Line::from(self.build_spans());
+        let mut lines = vec![Line::from(self.build_spans())];
+        if let Some(status_line) = self.agent_status_line() {
+            lines.push(status_line);
+        }
         let style = if selected {
-            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        ListItem::new(line).style(style)
+        ListItem::new(lines).style(style)
     }
 
     fn build_spans(&self) -> Vec<Span<'static>> {
@@ -708,10 +800,18 @@ impl<'a> WorkstreamRowBuilder<'a> {
         let mut first = true;
 
         if self.layout.is_visible(COL_IDX_STATUS) {
-            self.push_column(&mut spans, &mut first, vec![self.status_span(self.layout.widths[COL_IDX_STATUS])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.status_span(self.layout.widths[COL_IDX_STATUS])],
+            );
         }
         if self.layout.is_visible(COL_IDX_PRIORITY) {
-            self.push_column(&mut spans, &mut first, vec![self.priority_span(self.layout.widths[COL_IDX_PRIORITY])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.priority_span(self.layout.widths[COL_IDX_PRIORITY])],
+            );
         }
         if self.layout.is_visible(COL_IDX_ID) {
             self.push_column(
@@ -728,22 +828,43 @@ impl<'a> WorkstreamRowBuilder<'a> {
             );
         }
         if self.layout.is_visible(COL_IDX_PR) {
-            self.push_column(&mut spans, &mut first, vec![self.pr_span(self.layout.widths[COL_IDX_PR])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.pr_span(self.layout.widths[COL_IDX_PR])],
+            );
         }
         if self.layout.is_visible(COL_IDX_AGENT) {
-            self.push_column(&mut spans, &mut first, vec![self.agent_span(self.layout.widths[COL_IDX_AGENT])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.agent_span(self.layout.widths[COL_IDX_AGENT])],
+            );
         }
         if self.layout.is_visible(COL_IDX_VERCEL) {
-            self.push_column(&mut spans, &mut first, vec![self.vercel_span(self.layout.widths[COL_IDX_VERCEL])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.vercel_span(self.layout.widths[COL_IDX_VERCEL])],
+            );
         }
         if self.layout.is_visible(COL_IDX_TIME) {
-            self.push_column(&mut spans, &mut first, vec![self.elapsed_span(self.layout.widths[COL_IDX_TIME])]);
+            self.push_column(
+                &mut spans,
+                &mut first,
+                vec![self.elapsed_span(self.layout.widths[COL_IDX_TIME])],
+            );
         }
 
         spans
     }
 
-    fn push_column(&self, spans: &mut Vec<Span<'static>>, first: &mut bool, column_spans: Vec<Span<'static>>) {
+    fn push_column(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        first: &mut bool,
+        column_spans: Vec<Span<'static>>,
+    ) {
         if column_spans.is_empty() {
             return;
         }
@@ -785,7 +906,10 @@ impl<'a> WorkstreamRowBuilder<'a> {
         let id_text = pad_to_width(&issue.identifier, content_width, Alignment::Left);
         let mut spans = Vec::new();
         if !sub_prefix.is_empty() {
-            spans.push(Span::styled(sub_prefix.to_string(), Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                sub_prefix.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         spans.extend(highlight_search_matches(
             &id_text,
@@ -835,13 +959,13 @@ impl<'a> WorkstreamRowBuilder<'a> {
     fn agent_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(session) = &self.ws.agent_session {
             let cfg = agent_status_config(session.status);
-            let label = session.status.label();
+            let (icon, ascii, label) = agent_badge(session.status);
             // Add agent type prefix: CC for Claude Code, MB for Moltbot
             let type_prefix = match session.agent_type {
                 crate::data::AgentType::ClaudeCode => "CC",
                 crate::data::AgentType::Clawdbot => "MB",
             };
-            let text = format!("{} {} {}", type_prefix, cfg.icon, label);
+            let text = format!("{} {}{} {}", type_prefix, icon, ascii, label);
             (pad_to_width(&text, width, Alignment::Left), cfg.style)
         } else {
             (
@@ -866,6 +990,12 @@ impl<'a> WorkstreamRowBuilder<'a> {
     }
 
     fn elapsed_span(&self, width: usize) -> Span<'static> {
+        if self.ws.stale {
+            return Span::styled(
+                pad_to_width("STALE", width, Alignment::Right),
+                Style::default().fg(Color::Yellow),
+            );
+        }
         let elapsed = if let Some(session) = &self.ws.agent_session {
             let duration = chrono::Utc::now().signed_duration_since(session.started_at);
             if session.status == AgentStatus::Done {
@@ -887,13 +1017,59 @@ impl<'a> WorkstreamRowBuilder<'a> {
             Style::default().fg(Color::DarkGray),
         )
     }
+
+    fn agent_status_line(&self) -> Option<Line<'static>> {
+        let session = self.ws.agent_session.as_ref()?;
+        let output = session.last_output.as_deref()?;
+        let snippet = output.lines().find(|line| !line.trim().is_empty())?.trim();
+        if snippet.is_empty() {
+            return None;
+        }
+
+        let (icon, ascii, label) = agent_badge(session.status);
+        let type_prefix = match session.agent_type {
+            crate::data::AgentType::ClaudeCode => "CC",
+            crate::data::AgentType::Clawdbot => "MB",
+        };
+        let prefix_text = format!("{} {}{} {}", type_prefix, icon, ascii, label);
+        let indent = title_column_offset(self.layout);
+        let max_width = (self.layout.row_body_width + PREFIX_WIDTH).saturating_sub(indent);
+        let snippet_width = max_width
+            .saturating_sub(display_width(&prefix_text))
+            .saturating_sub(3);
+        let snippet = truncate_with_ellipsis(snippet, snippet_width);
+
+        let spans = vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(prefix_text, agent_status_config(session.status).style),
+            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(snippet, Style::default().fg(Color::DarkGray)),
+        ];
+        Some(Line::from(spans))
+    }
 }
 
 // Icon and color helpers
 
+fn agent_badge(status: AgentStatus) -> (&'static str, char, &'static str) {
+    match status {
+        AgentStatus::Running => (icons::AGENT_RUNNING, icons::AGENT_RUNNING_ASCII, "RUN"),
+        AgentStatus::Idle => (icons::AGENT_IDLE, icons::AGENT_IDLE_ASCII, "IDLE"),
+        AgentStatus::WaitingForInput => (icons::AGENT_WAITING, icons::AGENT_WAITING_ASCII, "WAIT"),
+        AgentStatus::Done => (icons::AGENT_DONE, icons::AGENT_DONE_ASCII, "DONE"),
+        AgentStatus::Error => (icons::AGENT_ERROR, icons::AGENT_ERROR_ASCII, "ERR"),
+    }
+}
+
 /// Highlight search matches in text with yellow/bold styling
-fn highlight_search_matches(text: &str, query: Option<&str>, base_style: Style) -> Vec<Span<'static>> {
-    let highlight_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+fn highlight_search_matches(
+    text: &str,
+    query: Option<&str>,
+    base_style: Style,
+) -> Vec<Span<'static>> {
+    let highlight_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
 
     match query {
         Some(q) if !q.is_empty() => {
@@ -987,7 +1163,10 @@ impl StatusConfigurable for LinearPriority {
         match self {
             LinearPriority::Urgent => StatusConfig {
                 icon: icons::PRIORITY_URGENT,
-                style: Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+                style: Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
             },
             LinearPriority::High => StatusConfig {
                 icon: icons::PRIORITY_HIGH,
@@ -1049,19 +1228,21 @@ impl StatusConfigurable for AgentStatus {
         match self {
             AgentStatus::Running => StatusConfig {
                 icon: icons::AGENT_RUNNING,
-                style: Style::default().fg(Color::Green),
+                style: Style::default().fg(Color::Cyan),
             },
             AgentStatus::Idle => StatusConfig {
                 icon: icons::AGENT_IDLE,
-                style: Style::default().fg(Color::Yellow),
+                style: Style::default().fg(Color::DarkGray),
             },
             AgentStatus::WaitingForInput => StatusConfig {
                 icon: icons::AGENT_WAITING,
-                style: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                style: Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             },
             AgentStatus::Done => StatusConfig {
                 icon: icons::AGENT_DONE,
-                style: Style::default().fg(Color::DarkGray),
+                style: Style::default().fg(Color::Green),
             },
             AgentStatus::Error => StatusConfig {
                 icon: icons::AGENT_ERROR,
@@ -1195,7 +1376,12 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         } else {
             format!(" RESIZE: {} ", app.current_resize_column_name())
         };
-        Span::styled(text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        Span::styled(
+            text,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
     } else if app.state.search_mode {
         let text = if width >= 55 {
             " Type to search | ↑/↓: navigate | Enter: confirm | Esc: exit "
@@ -1211,7 +1397,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let sort_indicator = format!("[{}]", app.state.sort_mode.label());
             format!(" j/k: nav | o/Enter: details | l: links | z: fold | /: search | f: filter | s: sort {} | ?: help ", sort_indicator)
         } else if width >= 90 {
-            " j/k: nav | o: details | l: links | z: fold | /: search | f: filter | ?: help ".to_string()
+            " j/k: nav | o: details | l: links | z: fold | /: search | f: filter | ?: help "
+                .to_string()
         } else if width >= 65 {
             " j/k:nav o:details l:links z:fold /:search f:filter ?:help ".to_string()
         } else if width >= 40 {
@@ -1232,11 +1419,21 @@ fn draw_help_popup(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     // Tab bar
-    let tab_style_active = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let tab_style_active = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let tab_style_inactive = Style::default().fg(Color::DarkGray);
 
-    let tab_1_style = if app.help_tab() == 0 { tab_style_active } else { tab_style_inactive };
-    let tab_2_style = if app.help_tab() == 1 { tab_style_active } else { tab_style_inactive };
+    let tab_1_style = if app.help_tab() == 0 {
+        tab_style_active
+    } else {
+        tab_style_inactive
+    };
+    let tab_2_style = if app.help_tab() == 1 {
+        tab_style_active
+    } else {
+        tab_style_inactive
+    };
 
     let tabs = Line::from(vec![
         Span::styled(" [1] Shortcuts ", tab_1_style),
@@ -1282,11 +1479,18 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
     let active_style = Style::default().fg(Color::White);
     let inactive_style = Style::default().fg(Color::DarkGray);
     let label_style = Style::default().fg(Color::Cyan);
-    let title_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let selected_child_style = Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+    let title_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let selected_child_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
 
     // Search highlighting style
-    let search_highlight_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let search_highlight_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let block = Block::default()
         .title(" 󰌷 Issue Details ")
         .borders(Borders::ALL)
@@ -1325,7 +1529,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             let search_style = Style::default().fg(Color::Yellow);
             push_plain!(Line::from(vec![
                 Span::styled("  / ", search_style),
-                Span::styled(app.modal_search_query.clone(), Style::default().fg(Color::White)),
+                Span::styled(
+                    app.modal_search_query.clone(),
+                    Style::default().fg(Color::White)
+                ),
                 Span::styled("█", Style::default().fg(Color::Yellow)), // Cursor
             ]));
             push_plain!(Line::from(""));
@@ -1334,7 +1541,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             let search_style = Style::default().fg(Color::Cyan);
             push_plain!(Line::from(vec![
                 Span::styled("  🔍 ", search_style),
-                Span::styled(format!("\"{}\"", &app.modal_search_query), search_highlight_style),
+                Span::styled(
+                    format!("\"{}\"", &app.modal_search_query),
+                    search_highlight_style
+                ),
                 Span::styled(" (/ to edit, Esc to clear)", inactive_style),
             ]));
             push_plain!(Line::from(""));
@@ -1347,7 +1557,13 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             push_plain!(Line::from(vec![
                 Span::styled("  ", nav_style),
                 Span::styled("← Esc", back_style),
-                Span::styled(format!(" to go back ({} in history)", app.issue_navigation_stack.len()), nav_style),
+                Span::styled(
+                    format!(
+                        " to go back ({} in history)",
+                        app.issue_navigation_stack.len()
+                    ),
+                    nav_style
+                ),
             ]));
             push_plain!(Line::from(""));
         }
@@ -1361,9 +1577,17 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
         // Issue identifier and title (always shown) - with highlighting
         let mut title_line = vec![Span::styled("  ", title_style)];
-        title_line.extend(highlight_search_matches(&issue.identifier, search_q, title_style));
+        title_line.extend(highlight_search_matches(
+            &issue.identifier,
+            search_q,
+            title_style,
+        ));
         title_line.push(Span::styled(" ", title_style));
-        title_line.extend(highlight_search_matches(&truncate_str(&issue.title, 50), search_q, active_style));
+        title_line.extend(highlight_search_matches(
+            &truncate_str(&issue.title, 50),
+            search_q,
+            active_style,
+        ));
         push_plain!(Line::from(title_line));
         push_plain!(Line::from(""));
 
@@ -1426,7 +1650,11 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 Span::styled(format!("  {} ", icons::ICON_CYCLE), label_style),
                 Span::styled("Cycle: ", label_style),
             ];
-            spans.extend(highlight_search_matches(&cycle.name, search_q, active_style));
+            spans.extend(highlight_search_matches(
+                &cycle.name,
+                search_q,
+                active_style,
+            ));
             spans.push(Span::styled(format!(" ({})", cycle.number), active_style));
             push_plain!(Line::from(spans));
         }
@@ -1443,7 +1671,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
         // Labels with icon - with highlighting
         if !issue.labels.is_empty() {
             let mut spans = vec![
-                Span::styled(format!("  {} ", icons::ICON_LABELS), Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    format!("  {} ", icons::ICON_LABELS),
+                    Style::default().fg(Color::Magenta),
+                ),
                 Span::styled("Labels: ", label_style),
             ];
             let label_style_base = Style::default().fg(Color::Magenta);
@@ -1451,7 +1682,11 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 if i > 0 {
                     spans.push(Span::styled(", ", label_style_base));
                 }
-                spans.extend(highlight_search_matches(&label.name, search_q, label_style_base));
+                spans.extend(highlight_search_matches(
+                    &label.name,
+                    search_q,
+                    label_style_base,
+                ));
             }
             push_plain!(Line::from(spans));
         }
@@ -1461,12 +1696,18 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             left: vec![
                 Span::styled(format!("  {} ", icons::ICON_CREATED), inactive_style),
                 Span::styled("Created: ", label_style),
-                Span::styled(issue.created_at.format("%Y-%m-%d").to_string(), inactive_style),
+                Span::styled(
+                    issue.created_at.format("%Y-%m-%d").to_string(),
+                    inactive_style,
+                ),
             ],
             right: vec![
                 Span::styled(format!("{} ", icons::ICON_UPDATED), inactive_style),
                 Span::styled("Updated: ", label_style),
-                Span::styled(issue.updated_at.format("%Y-%m-%d %H:%M").to_string(), inactive_style),
+                Span::styled(
+                    issue.updated_at.format("%Y-%m-%d %H:%M").to_string(),
+                    inactive_style,
+                ),
             ],
         }));
 
@@ -1474,19 +1715,50 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
         if let Some(parent) = &issue.parent {
             push_plain!(Line::from(""));
             let is_selected = app.parent_selected;
-            let row_style = if is_selected { selected_child_style } else { Style::default() };
-            let label_row_style = if is_selected { selected_child_style } else { label_style };
-            let id_style = if is_selected { selected_child_style } else { Style::default().fg(Color::Yellow) };
-            let title_style = if is_selected { selected_child_style } else { active_style };
+            let row_style = if is_selected {
+                selected_child_style
+            } else {
+                Style::default()
+            };
+            let label_row_style = if is_selected {
+                selected_child_style
+            } else {
+                label_style
+            };
+            let id_style = if is_selected {
+                selected_child_style
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            let title_style = if is_selected {
+                selected_child_style
+            } else {
+                active_style
+            };
 
             let mut parent_spans = vec![
                 Span::styled(if is_selected { " >> " } else { "  " }, row_style),
-                Span::styled(format!("{} ", icons::ICON_PARENT), if is_selected { row_style } else { Style::default().fg(Color::Blue) }),
+                Span::styled(
+                    format!("{} ", icons::ICON_PARENT),
+                    if is_selected {
+                        row_style
+                    } else {
+                        Style::default().fg(Color::Blue)
+                    },
+                ),
                 Span::styled("Parent: ", label_row_style),
             ];
-            parent_spans.extend(highlight_search_matches(&parent.identifier, search_q, id_style));
+            parent_spans.extend(highlight_search_matches(
+                &parent.identifier,
+                search_q,
+                id_style,
+            ));
             parent_spans.push(Span::styled(" ", row_style));
-            parent_spans.extend(highlight_search_matches(&truncate_str(&parent.title, 40), search_q, title_style));
+            parent_spans.extend(highlight_search_matches(
+                &truncate_str(&parent.title, 40),
+                search_q,
+                title_style,
+            ));
             push_plain!(Line::from(parent_spans));
         }
 
@@ -1499,7 +1771,8 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 issue.children.iter().collect()
             } else {
                 let mut fuzzy = FuzzySearch::new();
-                issue.children
+                issue
+                    .children
                     .iter()
                     .filter(|child| {
                         // Search identifier, title, status name, and priority label
@@ -1510,7 +1783,9 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                             child.status.display_name(),
                             child.priority.label()
                         );
-                        fuzzy.multi_term_match(&app.modal_search_query, &text).is_some()
+                        fuzzy
+                            .multi_term_match(&app.modal_search_query, &text)
+                            .is_some()
                     })
                     .collect()
             };
@@ -1535,7 +1810,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 " (j/k to select)"
             };
             push_plain!(Line::from(vec![
-                Span::styled(format!("  {} ", icons::ICON_CHILDREN), Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("  {} ", icons::ICON_CHILDREN),
+                    Style::default().fg(Color::Green)
+                ),
                 Span::styled(count_text, label_style),
                 Span::styled(hint, inactive_style),
             ]));
@@ -1544,14 +1822,22 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             if sorted_children.is_empty() && !app.modal_search_query.is_empty() {
                 push_plain!(Line::from(vec![
                     Span::styled("    ", inactive_style),
-                    Span::styled("No matching sub-issues", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                    Span::styled(
+                        "No matching sub-issues",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC)
+                    ),
                 ]));
             } else {
                 // Show scroll-up indicator if scrolled
                 if scroll > 0 {
                     push_plain!(Line::from(vec![
                         Span::styled("    ", inactive_style),
-                        Span::styled(format!("↑ {} more above", scroll), Style::default().fg(Color::Cyan)),
+                        Span::styled(
+                            format!("↑ {} more above", scroll),
+                            Style::default().fg(Color::Cyan)
+                        ),
                     ]));
                 }
 
@@ -1573,24 +1859,58 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                     let child_status_cfg = linear_status_config(child.status);
                     let child_priority_cfg = priority_config(child.priority);
 
-                    let row_style = if is_selected { selected_child_style } else { Style::default() };
-                    let id_style = if is_selected { selected_child_style } else { Style::default().fg(Color::Yellow) };
-                    let title_row_style = if is_selected { selected_child_style } else { active_style };
+                    let row_style = if is_selected {
+                        selected_child_style
+                    } else {
+                        Style::default()
+                    };
+                    let id_style = if is_selected {
+                        selected_child_style
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    };
+                    let title_row_style = if is_selected {
+                        selected_child_style
+                    } else {
+                        active_style
+                    };
 
                     // Build line with highlighted spans for identifier and title
                     let mut spans = vec![
                         Span::styled(if is_selected { " >> " } else { "    " }, row_style),
-                        Span::styled(format!("{} ", child_status_cfg.icon), if is_selected { row_style } else { child_status_cfg.style }),
-                        Span::styled(format!("{} ", child_priority_cfg.icon), if is_selected { row_style } else { child_priority_cfg.style }),
+                        Span::styled(
+                            format!("{} ", child_status_cfg.icon),
+                            if is_selected {
+                                row_style
+                            } else {
+                                child_status_cfg.style
+                            },
+                        ),
+                        Span::styled(
+                            format!("{} ", child_priority_cfg.icon),
+                            if is_selected {
+                                row_style
+                            } else {
+                                child_priority_cfg.style
+                            },
+                        ),
                     ];
 
                     // Add highlighted identifier
-                    spans.extend(highlight_search_matches(&child.identifier, search_query, id_style));
+                    spans.extend(highlight_search_matches(
+                        &child.identifier,
+                        search_query,
+                        id_style,
+                    ));
                     spans.push(Span::styled(" ", row_style));
 
                     // Add highlighted title
                     let truncated_title = truncate_str(&child.title, 35);
-                    spans.extend(highlight_search_matches(&truncated_title, search_query, title_row_style));
+                    spans.extend(highlight_search_matches(
+                        &truncated_title,
+                        search_query,
+                        title_row_style,
+                    ));
 
                     push_plain!(Line::from(spans));
                 }
@@ -1600,7 +1920,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                 if visible_end < total_children {
                     push_plain!(Line::from(vec![
                         Span::styled("    ", inactive_style),
-                        Span::styled(format!("↓ {} more below", total_children - visible_end), Style::default().fg(Color::Cyan)),
+                        Span::styled(
+                            format!("↓ {} more below", total_children - visible_end),
+                            Style::default().fg(Color::Cyan)
+                        ),
                     ]));
                 }
             }
@@ -1611,7 +1934,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             push_plain!(Line::from(""));
             push_plain!(Line::from(vec![
                 Span::styled(format!("  {} ", icons::ICON_DOCUMENT), label_style),
-                Span::styled(format!("Documents ({}):", issue.attachments.len()), label_style),
+                Span::styled(
+                    format!("Documents ({}):", issue.attachments.len()),
+                    label_style
+                ),
             ]));
             for (i, attachment) in issue.attachments.iter().take(5).enumerate() {
                 let source_icon = match attachment.source_type.as_deref() {
@@ -1621,8 +1947,13 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
                     Some("slack") => "󰒱",
                     _ => "󰈙",
                 };
-                let mut att_spans = vec![Span::styled(format!("    {} ", source_icon), active_style)];
-                att_spans.extend(highlight_search_matches(&truncate_str(&attachment.title, 40), search_q, active_style));
+                let mut att_spans =
+                    vec![Span::styled(format!("    {} ", source_icon), active_style)];
+                att_spans.extend(highlight_search_matches(
+                    &truncate_str(&attachment.title, 40),
+                    search_q,
+                    active_style,
+                ));
                 att_spans.push(Span::styled(format!(" [d{}]", i + 1), inactive_style));
                 push_plain!(Line::from(att_spans));
             }
@@ -1644,7 +1975,12 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             ]));
             // Wrap description to ~60 chars per line, max 3 lines - with highlighting
             let desc_clean = desc.replace('\n', " ").replace("  ", " ");
-            for (i, chunk) in desc_clean.chars().collect::<Vec<_>>().chunks(58).enumerate() {
+            for (i, chunk) in desc_clean
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(58)
+                .enumerate()
+            {
                 if i >= 3 {
                     push_plain!(Line::from(Span::styled("    ...", inactive_style)));
                     break;
@@ -1700,7 +2036,10 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
 
         lines
     } else {
-        vec![Line::from(Span::styled("  No workstream selected", inactive_style))]
+        vec![Line::from(Span::styled(
+            "  No workstream selected",
+            inactive_style,
+        ))]
     };
 
     let lines = fit_lines_to_area(lines, inner, 1);
@@ -1721,6 +2060,7 @@ fn draw_links_popup(f: &mut Frame, app: &App) {
 
     let lines: Vec<Line> = if let Some(ws) = app.modal_issue() {
         let issue = &ws.linear_issue;
+        let has_linear = !issue.url.is_empty();
         let has_pr = ws.github_pr.is_some();
         let has_vercel = ws.vercel_deployment.is_some();
         let has_session = ws.agent_session.is_some();
@@ -1728,8 +2068,16 @@ fn draw_links_popup(f: &mut Frame, app: &App) {
         vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("  [1] 󰌷 Linear: {}", issue.identifier),
-                active_style,
+                if has_linear {
+                    format!("  [1] 󰌷 Linear: {}", issue.identifier)
+                } else {
+                    "  [1] 󰌷 Linear: (unlinked)".to_string()
+                },
+                if has_linear {
+                    active_style
+                } else {
+                    inactive_style
+                },
             )),
             Line::from(Span::styled(
                 if let Some(pr) = &ws.github_pr {
@@ -1745,7 +2093,11 @@ fn draw_links_popup(f: &mut Frame, app: &App) {
                 } else {
                     "  [3] ▲ Vercel: (no deploy)".to_string()
                 },
-                if has_vercel { active_style } else { inactive_style },
+                if has_vercel {
+                    active_style
+                } else {
+                    inactive_style
+                },
             )),
             Line::from(Span::styled(
                 if ws.agent_session.is_some() {
@@ -1753,13 +2105,14 @@ fn draw_links_popup(f: &mut Frame, app: &App) {
                 } else {
                     "  [4] 󰚩 Agent: (no session)".to_string()
                 },
-                if has_session { active_style } else { inactive_style },
+                if has_session {
+                    active_style
+                } else {
+                    inactive_style
+                },
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "  1-4: open | Esc: close",
-                inactive_style,
-            )),
+            Line::from(Span::styled("  1-4: open | Esc: close", inactive_style)),
         ]
     } else {
         vec![Line::from(Span::styled("  No issue", inactive_style))]
@@ -1781,7 +2134,9 @@ fn draw_description_modal(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let title_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let title_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let text_style = Style::default().fg(Color::White);
     let dim_style = Style::default().fg(Color::DarkGray);
 
@@ -1821,7 +2176,10 @@ fn draw_description_modal(f: &mut Frame, app: &App) {
 
         lines
     } else {
-        vec![Line::from(Span::styled("  No workstream selected", dim_style))]
+        vec![Line::from(Span::styled(
+            "  No workstream selected",
+            dim_style,
+        ))]
     };
 
     let scroll_hint = format!("[line {}]", scroll_line);
@@ -1851,22 +2209,35 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
     let mut in_link = false;
 
     let text_style = Style::default().fg(Color::White);
-    let bold_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
-    let italic_style = Style::default().fg(Color::White).add_modifier(Modifier::ITALIC);
-    let bold_italic_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD | Modifier::ITALIC);
+    let bold_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let italic_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::ITALIC);
+    let bold_italic_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD | Modifier::ITALIC);
     let code_style = Style::default().fg(Color::Gray);
     let code_block_style = Style::default().fg(Color::Gray);
-    let heading_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let link_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
-    let quote_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+    let heading_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let link_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::UNDERLINED);
+    let quote_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
 
-    let flush_line = |spans: &mut Vec<Span<'static>>, lines: &mut Vec<Line<'static>>, indent: &str| {
-        if !spans.is_empty() {
-            let mut line_spans = vec![Span::raw(indent.to_string())];
-            line_spans.append(spans);
-            lines.push(Line::from(line_spans));
-        }
-    };
+    let flush_line =
+        |spans: &mut Vec<Span<'static>>, lines: &mut Vec<Line<'static>>, indent: &str| {
+            if !spans.is_empty() {
+                let mut line_spans = vec![Span::raw(indent.to_string())];
+                line_spans.append(spans);
+                lines.push(Line::from(line_spans));
+            }
+        };
 
     for event in parser {
         match event {
@@ -2008,10 +2379,10 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
 
 /// Sort children by the current sort mode (inheriting from main view)
 /// Sort children list (pre-filtered or full)
-fn sort_filtered_children<'a>(
-    mut children: Vec<&'a LinearChildRef>,
+fn sort_filtered_children(
+    mut children: Vec<&LinearChildRef>,
     sort_mode: SortMode,
-) -> Vec<&'a LinearChildRef> {
+) -> Vec<&LinearChildRef> {
     match sort_mode {
         SortMode::ByLinearStatus => {
             children.sort_by_key(|c| c.status.sort_order());
@@ -2019,7 +2390,10 @@ fn sort_filtered_children<'a>(
         SortMode::ByPriority => {
             children.sort_by_key(|c| c.priority.sort_order());
         }
-        SortMode::ByAgentStatus | SortMode::ByVercelStatus | SortMode::ByPRActivity | SortMode::ByLastUpdated => {
+        SortMode::ByAgentStatus
+        | SortMode::ByVercelStatus
+        | SortMode::ByPRActivity
+        | SortMode::ByLastUpdated => {
             // Children don't have these fields, sort by status as fallback
             children.sort_by_key(|c| c.status.sort_order());
         }
@@ -2056,12 +2430,32 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
 
     // Sort options with icons
     let options: Vec<(usize, SortMode, &str, &str)> = vec![
-        (1, SortMode::ByAgentStatus, "󰚩", "Agent Status (waiting first)"),
-        (2, SortMode::ByVercelStatus, "▲", "Vercel Status (errors first)"),
-        (3, SortMode::ByLastUpdated, "󰥔", "Last Updated (recent first)"),
+        (
+            1,
+            SortMode::ByAgentStatus,
+            "󰚩",
+            "Agent Status (waiting first)",
+        ),
+        (
+            2,
+            SortMode::ByVercelStatus,
+            "▲",
+            "Vercel Status (errors first)",
+        ),
+        (
+            3,
+            SortMode::ByLastUpdated,
+            "󰥔",
+            "Last Updated (recent first)",
+        ),
         (4, SortMode::ByPriority, "⚠", "Priority (urgent first)"),
         (5, SortMode::ByLinearStatus, "◐", "Linear Status (default)"),
-        (6, SortMode::ByPRActivity, "", "PR Activity (needs attention)"),
+        (
+            6,
+            SortMode::ByPRActivity,
+            "",
+            "PR Activity (needs attention)",
+        ),
     ];
 
     let mut lines: Vec<Line> = vec![Line::from("")];
@@ -2072,7 +2466,14 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
         let text_style = if is_selected { active_style } else { dim_style };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", marker), if is_selected { Style::default().fg(Color::Green) } else { dim_style }),
+            Span::styled(
+                format!("  {} ", marker),
+                if is_selected {
+                    Style::default().fg(Color::Green)
+                } else {
+                    dim_style
+                },
+            ),
             Span::styled(format!("[{}] ", idx), text_style),
             Span::styled(format!("{} ", icon), icon_style),
             Span::styled(label, text_style),
@@ -2080,7 +2481,10 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("  Press 1-6 to select | Esc: Cancel", dim_style)));
+    lines.push(Line::from(Span::styled(
+        "  Press 1-6 to select | Esc: Cancel",
+        dim_style,
+    )));
 
     let block = Block::default()
         .title(" 󰒺 Sort By ")
@@ -2099,8 +2503,14 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     // Calculate height based on content
     let base_height = 25; // Base height for headers and footer
     let cycle_height = app.available_cycles.len().min(5) + 2;
-    let project_height = if app.available_projects.is_empty() { 0 } else { app.available_projects.len().min(5) + 2 };
-    let total_height = (base_height + cycle_height + project_height).min(40) as u16;
+    let project_height = if app.available_projects.is_empty() {
+        0
+    } else {
+        app.available_projects.len().min(5) + 2
+    };
+    let assignee_height = 5 + app.available_team_members.len().min(5); // header + all + me/unassigned + members + spacer
+    let total_height =
+        (base_height + cycle_height + project_height + assignee_height).min(45) as u16;
 
     let area = popup_rect(55, 80, 42, total_height, f.area());
 
@@ -2108,7 +2518,9 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
 
     let active_style = Style::default().fg(Color::White);
     let dim_style = Style::default().fg(Color::DarkGray);
-    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2117,13 +2529,21 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     // ─────────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled("  CYCLE", header_style)));
     lines.extend(render_filter_checkbox(
-        "0", "All cycles", app.filter_cycles.is_empty(), active_style, dim_style
+        "0",
+        "All cycles",
+        app.filter_cycles.is_empty(),
+        active_style,
+        dim_style,
     ));
     for (idx, cycle) in app.available_cycles.iter().enumerate().take(5) {
         let is_selected = app.filter_cycles.contains(&cycle.id);
         let label = format!("Cycle {} ({})", cycle.number, truncate_str(&cycle.name, 10));
         lines.extend(render_filter_checkbox(
-            &(idx + 1).to_string(), &label, is_selected, active_style, dim_style
+            &(idx + 1).to_string(),
+            &label,
+            is_selected,
+            active_style,
+            dim_style,
         ));
     }
     lines.push(Line::from(""));
@@ -2140,9 +2560,17 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
         ('n', LinearPriority::NoPriority, "No Priority"),
     ];
     for (key, priority, label) in priorities {
-        let is_selected = app.filter_priorities.is_empty() || app.filter_priorities.contains(&priority);
+        let is_selected =
+            app.filter_priorities.is_empty() || app.filter_priorities.contains(&priority);
         let priority_cfg = priority_config(priority);
-        lines.push(render_priority_checkbox(key, priority_cfg, label, is_selected, active_style, dim_style));
+        lines.push(render_priority_checkbox(
+            key,
+            priority_cfg,
+            label,
+            is_selected,
+            active_style,
+            dim_style,
+        ));
     }
     lines.push(Line::from(""));
 
@@ -2152,26 +2580,83 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     if !app.available_projects.is_empty() {
         lines.push(Line::from(Span::styled("  PROJECT", header_style)));
         lines.extend(render_filter_checkbox(
-            "P", "All projects", app.filter_projects.is_empty(), active_style, dim_style
+            "p0",
+            "All projects",
+            app.filter_projects.is_empty(),
+            active_style,
+            dim_style,
         ));
         for (idx, project) in app.available_projects.iter().enumerate().take(5) {
             let is_selected = app.filter_projects.contains(&project.id);
             lines.extend(render_filter_checkbox(
-                &format!("p{}", idx + 1), &truncate_str(&project.name, 20), is_selected, active_style, dim_style
+                &format!("p{}", idx + 1),
+                &truncate_str(&project.name, 20),
+                is_selected,
+                active_style,
+                dim_style,
             ));
         }
         lines.push(Line::from(""));
     }
 
     // ─────────────────────────────────────────────────────────────────
+    // Assignee section
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled("  ASSIGNEE", header_style)));
+    let all_assignees = app.filter_assignees.is_empty();
+    let me_selected = app.filter_assignees.contains("me");
+    let unassigned_selected = app.filter_assignees.contains("unassigned");
+    lines.extend(render_filter_checkbox(
+        "s9",
+        "All assignees",
+        all_assignees,
+        active_style,
+        dim_style,
+    ));
+    lines.extend(render_filter_checkbox(
+        "s0",
+        "Me",
+        me_selected,
+        active_style,
+        dim_style,
+    ));
+    lines.extend(render_filter_checkbox(
+        "s1",
+        "Unassigned",
+        unassigned_selected,
+        active_style,
+        dim_style,
+    ));
+    for (idx, member) in app.available_team_members.iter().enumerate().take(5) {
+        let is_selected = app.filter_assignees.contains(&member.id);
+        let name = member.display_name.as_ref().unwrap_or(&member.name);
+        lines.extend(render_filter_checkbox(
+            &format!("s{}", idx + 2),
+            &truncate_str(name, 20),
+            is_selected,
+            active_style,
+            dim_style,
+        ));
+    }
+    lines.push(Line::from(""));
+
+    // ─────────────────────────────────────────────────────────────────
     // Status section
     // ─────────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled("  STATUS", header_style)));
     lines.extend(render_filter_checkbox(
-        "d", "Show completed", app.show_completed, active_style, dim_style
+        "d",
+        "Show completed",
+        app.show_completed,
+        active_style,
+        dim_style,
     ));
     lines.extend(render_filter_checkbox(
-        "x", "Show canceled", app.show_canceled, active_style, dim_style
+        "x",
+        "Show canceled",
+        app.show_canceled,
+        active_style,
+        dim_style,
     ));
     lines.push(Line::from(""));
 
@@ -2180,11 +2665,18 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     // ─────────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled("  HIERARCHY", header_style)));
     lines.extend(render_filter_checkbox(
-        "t", "Show sub-issues", app.show_sub_issues, active_style, dim_style
+        "t",
+        "Show sub-issues",
+        app.show_sub_issues,
+        active_style,
+        dim_style,
     ));
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("  [a] All | [c] Clear | Esc: Close", dim_style)));
+    lines.push(Line::from(Span::styled(
+        "  [a] All | [c] Clear | Esc: Close",
+        dim_style,
+    )));
 
     let block = Block::default()
         .title(" 󰈲 Filter ")
@@ -2245,5 +2737,10 @@ fn popup_rect(percent_x: u16, percent_y: u16, min_width: u16, min_height: u16, r
     let x = r.x + (r.width.saturating_sub(width)) / 2;
     let y = r.y + (r.height.saturating_sub(height)) / 2;
 
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }

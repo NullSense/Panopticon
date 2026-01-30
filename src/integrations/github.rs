@@ -26,7 +26,10 @@ pub async fn fetch_pr_from_url(config: &Config, pr_url: &str) -> Result<GitHubPR
 pub async fn fetch_pr(config: &Config, owner: &str, repo: &str, number: u64) -> Result<GitHubPR> {
     let client = &*HTTP_CLIENT;
 
-    let url = format!("{}/repos/{}/{}/pulls/{}", GITHUB_API_URL, owner, repo, number);
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}",
+        GITHUB_API_URL, owner, repo, number
+    );
 
     let response = client
         .get(&url)

@@ -50,7 +50,10 @@ impl AgentSessionCache {
             }
         }
 
-        Self { by_branch, all_sessions }
+        Self {
+            by_branch,
+            all_sessions,
+        }
     }
 
     /// Load all sessions from Claude and Moltbot sources.
@@ -129,7 +132,12 @@ mod tests {
     use crate::data::{AgentStatus, AgentType};
     use chrono::Utc;
 
-    fn make_session(id: &str, dir: &str, branch: Option<&str>, agent_type: AgentType) -> AgentSession {
+    fn make_session(
+        id: &str,
+        dir: &str,
+        branch: Option<&str>,
+        agent_type: AgentType,
+    ) -> AgentSession {
         AgentSession {
             id: id.to_string(),
             agent_type,
@@ -151,8 +159,18 @@ mod tests {
 
     #[test]
     fn test_claude_precedence() {
-        let claude = vec![make_session("claude-1", "/project", Some("main"), AgentType::ClaudeCode)];
-        let moltbot = vec![make_session("moltbot-1", "/project", Some("main"), AgentType::Clawdbot)];
+        let claude = vec![make_session(
+            "claude-1",
+            "/project",
+            Some("main"),
+            AgentType::ClaudeCode,
+        )];
+        let moltbot = vec![make_session(
+            "moltbot-1",
+            "/project",
+            Some("main"),
+            AgentType::Clawdbot,
+        )];
 
         let cache = AgentSessionCache::from_sessions(claude, moltbot);
 

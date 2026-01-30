@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Test utilities and fixtures for panopticon tests
 
 pub mod claude_settings;
@@ -210,6 +211,8 @@ pub fn parse_issue(node: &Value) -> Option<ParsedIssue> {
         labels,
         project: node["project"]["name"].as_str().map(String::from),
         team: node["team"]["name"].as_str().map(String::from),
+        assignee_id: None,
+        assignee_name: None,
         estimate: node["estimate"].as_f64().map(|e| e as f32),
         attachments,
         parent,
@@ -329,9 +332,11 @@ pub struct LinearIssue {
     pub labels: Vec<LinearLabel>,
     pub project: Option<String>,
     pub team: Option<String>,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
     pub estimate: Option<f32>,
     pub attachments: Vec<LinearAttachment>,
-        pub parent: Option<LinearParentRef>,
+    pub parent: Option<LinearParentRef>,
     pub children: Vec<LinearChildRef>,
 }
 

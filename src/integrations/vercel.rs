@@ -63,10 +63,7 @@ pub async fn fetch_deployment_for_branch(
                 status,
                 created_at: d["createdAt"]
                     .as_i64()
-                    .map(|ts| {
-                        chrono::DateTime::from_timestamp_millis(ts)
-                            .unwrap_or_else(Utc::now)
-                    })
+                    .map(|ts| chrono::DateTime::from_timestamp_millis(ts).unwrap_or_else(Utc::now))
                     .unwrap_or_else(Utc::now),
             }
         });

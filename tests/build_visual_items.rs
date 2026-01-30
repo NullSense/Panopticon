@@ -3,6 +3,8 @@
 //! Verifies that workstreams are correctly grouped into Agent Sessions and Issues sections,
 //! with proper sorting within each section.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use chrono::Utc;
 use panopticon::data::{
     AgentSession, AgentStatus, AgentType, AppState, LinearIssue, LinearPriority, LinearStatus,
@@ -25,6 +27,8 @@ fn make_workstream(id: &str, identifier: &str, status: LinearStatus) -> Workstre
             labels: vec![],
             project: None,
             team: Some("Test".to_string()),
+            assignee_id: None,
+            assignee_name: None,
             estimate: None,
             attachments: vec![],
             parent: None,
@@ -114,9 +118,21 @@ fn test_build_visual_items_preserves_search_order() {
 fn test_build_visual_items_groups_by_section() {
     let mut state = AppState::default();
     state.workstreams = vec![
-        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
+        make_workstream_with_agent(
+            "id-0",
+            "TEST-0",
+            LinearStatus::InProgress,
+            LinearPriority::High,
+            AgentStatus::Running,
+        ),
         make_workstream("id-1", "TEST-1", LinearStatus::Todo),
-        make_workstream_with_agent("id-2", "TEST-2", LinearStatus::InProgress, LinearPriority::Medium, AgentStatus::Idle),
+        make_workstream_with_agent(
+            "id-2",
+            "TEST-2",
+            LinearStatus::InProgress,
+            LinearPriority::Medium,
+            AgentStatus::Idle,
+        ),
     ];
 
     let filtered = vec![0, 1, 2]; // All items
@@ -129,17 +145,18 @@ fn test_build_visual_items_groups_by_section() {
 
     for item in &items {
         match item {
-            VisualItem::SectionHeader(section) => {
-                match section {
-                    SectionType::AgentSessions => agent_sessions_header_found = true,
-                    SectionType::Issues => issues_header_found = true,
-                }
-            }
+            VisualItem::SectionHeader(section) => match section {
+                SectionType::AgentSessions => agent_sessions_header_found = true,
+                SectionType::Issues => issues_header_found = true,
+            },
             VisualItem::Workstream(_) => workstream_count += 1,
         }
     }
 
-    assert!(agent_sessions_header_found, "AgentSessions section header should exist");
+    assert!(
+        agent_sessions_header_found,
+        "AgentSessions section header should exist"
+    );
     assert!(issues_header_found, "Issues section header should exist");
     assert_eq!(workstream_count, 3);
 }
@@ -181,7 +198,13 @@ fn test_build_visual_items_filters_correctly() {
 fn test_build_visual_items_collapsed_sections() {
     let mut state = AppState::default();
     state.workstreams = vec![
-        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
+        make_workstream_with_agent(
+            "id-0",
+            "TEST-0",
+            LinearStatus::InProgress,
+            LinearPriority::High,
+            AgentStatus::Running,
+        ),
         make_workstream("id-1", "TEST-1", LinearStatus::Todo),
     ];
     state.collapsed_sections.insert(SectionType::AgentSessions);
@@ -211,8 +234,14 @@ fn test_build_visual_items_collapsed_sections() {
         }
     }
 
-    assert!(agent_sessions_header_found, "AgentSessions section header should exist");
-    assert_eq!(agent_sessions_count, 0, "AgentSessions items should be hidden (collapsed)");
+    assert!(
+        agent_sessions_header_found,
+        "AgentSessions section header should exist"
+    );
+    assert_eq!(
+        agent_sessions_count, 0,
+        "AgentSessions items should be hidden (collapsed)"
+    );
     assert_eq!(issues_count, 1, "Issues items should be visible");
 }
 
@@ -283,11 +312,29 @@ fn test_agent_sessions_sorted_by_status_then_priority() {
     let mut state = AppState::default();
     state.workstreams = vec![
         // Agent with Running status, Medium priority
-        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::Medium, AgentStatus::Running),
+        make_workstream_with_agent(
+            "id-0",
+            "TEST-0",
+            LinearStatus::InProgress,
+            LinearPriority::Medium,
+            AgentStatus::Running,
+        ),
         // Agent with WaitingForInput status (highest priority), Low priority
-        make_workstream_with_agent("id-1", "TEST-1", LinearStatus::InProgress, LinearPriority::Low, AgentStatus::WaitingForInput),
+        make_workstream_with_agent(
+            "id-1",
+            "TEST-1",
+            LinearStatus::InProgress,
+            LinearPriority::Low,
+            AgentStatus::WaitingForInput,
+        ),
         // Agent with Running status, High priority
-        make_workstream_with_agent("id-2", "TEST-2", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
+        make_workstream_with_agent(
+            "id-2",
+            "TEST-2",
+            LinearStatus::InProgress,
+            LinearPriority::High,
+            AgentStatus::Running,
+        ),
     ];
 
     let filtered = vec![0, 1, 2];
@@ -309,7 +356,11 @@ fn test_agent_sessions_sorted_by_status_then_priority() {
     // 1. id-1 (WaitingForInput - most urgent agent status)
     // 2. id-2 (Running, High priority)
     // 3. id-0 (Running, Medium priority)
-    assert_eq!(workstream_order, vec![1, 2, 0], "Should be sorted by agent status then priority");
+    assert_eq!(
+        workstream_order,
+        vec![1, 2, 0],
+        "Should be sorted by agent status then priority"
+    );
 }
 
 #[test]
@@ -317,9 +368,19 @@ fn test_issues_sorted_by_priority_then_status() {
     let mut state = AppState::default();
     state.workstreams = vec![
         // Medium priority, InProgress
-        make_workstream_with_priority("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::Medium),
+        make_workstream_with_priority(
+            "id-0",
+            "TEST-0",
+            LinearStatus::InProgress,
+            LinearPriority::Medium,
+        ),
         // Urgent priority, Backlog
-        make_workstream_with_priority("id-1", "TEST-1", LinearStatus::Backlog, LinearPriority::Urgent),
+        make_workstream_with_priority(
+            "id-1",
+            "TEST-1",
+            LinearStatus::Backlog,
+            LinearPriority::Urgent,
+        ),
         // Medium priority, Todo (lower status than InProgress)
         make_workstream_with_priority("id-2", "TEST-2", LinearStatus::Todo, LinearPriority::Medium),
     ];
@@ -343,7 +404,11 @@ fn test_issues_sorted_by_priority_then_status() {
     // 1. id-1 (Urgent priority - highest)
     // 2. id-0 (Medium priority, InProgress - better status)
     // 3. id-2 (Medium priority, Todo - lower status)
-    assert_eq!(workstream_order, vec![1, 0, 2], "Should be sorted by priority then status");
+    assert_eq!(
+        workstream_order,
+        vec![1, 0, 2],
+        "Should be sorted by priority then status"
+    );
 }
 
 #[test]
@@ -353,7 +418,13 @@ fn test_agent_sessions_appear_before_issues() {
         // Issue without agent (should be in Issues section)
         make_workstream("id-0", "TEST-0", LinearStatus::InProgress),
         // Issue with agent (should be in AgentSessions section)
-        make_workstream_with_agent("id-1", "TEST-1", LinearStatus::Todo, LinearPriority::Low, AgentStatus::Idle),
+        make_workstream_with_agent(
+            "id-1",
+            "TEST-1",
+            LinearStatus::Todo,
+            LinearPriority::Low,
+            AgentStatus::Idle,
+        ),
         // Another issue without agent
         make_workstream("id-2", "TEST-2", LinearStatus::Backlog),
     ];
@@ -392,8 +463,18 @@ fn test_agent_sessions_appear_before_issues() {
     }
 
     // Agent sessions section should contain only id-1
-    assert_eq!(agent_workstream_indices, vec![1], "Only agent workstream should be in AgentSessions");
+    assert_eq!(
+        agent_workstream_indices,
+        vec![1],
+        "Only agent workstream should be in AgentSessions"
+    );
     // Issues section should contain id-0 and id-2
-    assert!(issue_workstream_indices.contains(&0), "Issue 0 should be in Issues section");
-    assert!(issue_workstream_indices.contains(&2), "Issue 2 should be in Issues section");
+    assert!(
+        issue_workstream_indices.contains(&0),
+        "Issue 0 should be in Issues section"
+    );
+    assert!(
+        issue_workstream_indices.contains(&2),
+        "Issue 2 should be in Issues section"
+    );
 }

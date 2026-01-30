@@ -1,6 +1,6 @@
 use anyhow::Result;
-use panopticon::{config, integrations, tui};
 use clap::{Parser, Subcommand};
+use panopticon::{config, integrations, tui};
 
 #[derive(Parser, Debug)]
 #[command(name = "panopticon")]
@@ -75,7 +75,9 @@ async fn main() -> Result<()> {
     }
 
     if args.daemon {
-        anyhow::bail!("Daemon mode is not yet implemented. Run without --daemon flag to use the TUI.");
+        anyhow::bail!(
+            "Daemon mode is not yet implemented. Run without --daemon flag to use the TUI."
+        );
     }
 
     // Run TUI

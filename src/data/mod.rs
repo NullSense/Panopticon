@@ -29,6 +29,8 @@ pub struct LinearIssue {
     pub labels: Vec<LinearLabel>,
     pub project: Option<String>,
     pub team: Option<String>,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
     pub estimate: Option<f32>,
     pub attachments: Vec<LinearAttachment>,
     pub parent: Option<LinearParentRef>,
@@ -143,7 +145,8 @@ impl LinearPriority {
             Self::Medium,
             Self::Low,
             Self::NoPriority,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -210,7 +213,8 @@ impl LinearStatus {
             Self::Done,
             Self::Canceled,
             Self::Duplicate,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -269,7 +273,8 @@ impl GitHubPRStatus {
             Self::Approved,
             Self::Merged,
             Self::Closed,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -318,7 +323,8 @@ impl VercelStatus {
             Self::Queued,
             Self::Error,
             Self::Canceled,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -387,7 +393,8 @@ impl AgentStatus {
             Self::WaitingForInput,
             Self::Done,
             Self::Error,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -465,6 +472,18 @@ impl SortMode {
             _ => None,
         }
     }
+
+    pub fn from_config_str(input: &str) -> Option<Self> {
+        match input.trim().to_lowercase().as_str() {
+            "priority" => Some(Self::ByPriority),
+            "status" | "linear" | "linear_status" | "linearstatus" => Some(Self::ByLinearStatus),
+            "agent" | "agent_status" | "agentstatus" => Some(Self::ByAgentStatus),
+            "vercel" | "vercel_status" | "vercelstatus" => Some(Self::ByVercelStatus),
+            "updated" | "last_updated" | "lastupdated" => Some(Self::ByLastUpdated),
+            "pr" | "pr_activity" | "practivity" => Some(Self::ByPRActivity),
+            _ => None,
+        }
+    }
 }
 
 /// Application state
@@ -487,11 +506,19 @@ impl AppState {
                 (0u8, ws.linear_issue.identifier.clone(), 0i64, 0u8, 0u8)
             }
             SortMode::ByAgentStatus => {
-                let status = ws.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
+                let status = ws
+                    .agent_session
+                    .as_ref()
+                    .map(|s| agent_sort_order(s.status))
+                    .unwrap_or(99);
                 (status, String::new(), 0i64, 0u8, 0u8)
             }
             SortMode::ByVercelStatus => {
-                let status = ws.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
+                let status = ws
+                    .vercel_deployment
+                    .as_ref()
+                    .map(|d| vercel_sort_order(d.status))
+                    .unwrap_or(99);
                 (status, String::new(), 0i64, 0u8, 0u8)
             }
             SortMode::ByLastUpdated => {
@@ -499,11 +526,19 @@ impl AppState {
                 let ts = -ws.linear_issue.updated_at.timestamp();
                 (0u8, String::new(), ts, 0u8, 0u8)
             }
-            SortMode::ByPriority => {
-                (ws.linear_issue.priority.sort_order(), String::new(), 0i64, 0u8, 0u8)
-            }
+            SortMode::ByPriority => (
+                ws.linear_issue.priority.sort_order(),
+                String::new(),
+                0i64,
+                0u8,
+                0u8,
+            ),
             SortMode::ByPRActivity => {
-                let pr = ws.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
+                let pr = ws
+                    .github_pr
+                    .as_ref()
+                    .map(|p| pr_sort_order(p.status))
+                    .unwrap_or(99);
                 (0u8, String::new(), 0i64, pr, 0u8)
             }
         }
@@ -530,10 +565,7 @@ impl AppState {
             if let Some(parent) = &ws.linear_issue.parent {
                 // Only treat as child if parent is in our list
                 if known_ids.contains(parent.id.as_str()) {
-                    children_of
-                        .entry(parent.id.as_str())
-                        .or_default()
-                        .push(ws);
+                    children_of.entry(parent.id.as_str()).or_default().push(ws);
                 } else {
                     // Parent not in list (filtered out, different status, etc.) - treat as root
                     roots.push(ws);
@@ -579,10 +611,7 @@ impl AppState {
             std::collections::HashMap::new();
 
         for ws in &self.workstreams {
-            groups
-                .entry(ws.linear_issue.status)
-                .or_default()
-                .push(ws);
+            groups.entry(ws.linear_issue.status).or_default().push(ws);
         }
 
         // Apply hierarchical sort within each group
@@ -600,21 +629,43 @@ impl AppState {
     /// Agent Sessions: Issues with an active agent, sorted by agent status → priority
     /// Issues: Issues without agents, sorted by priority → status
     pub fn grouped_by_section(&self) -> Vec<(SectionType, Vec<&Workstream>)> {
-        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) =
-            self.workstreams.iter().partition(|ws: &&Workstream| ws.agent_session.is_some());
+        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) = self
+            .workstreams
+            .iter()
+            .partition(|ws: &&Workstream| ws.agent_session.is_some());
 
         // Agent Sessions: sort by agent status → priority
         agent_sessions.sort_by(|a, b| {
-            let a_status = a.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-            let b_status = b.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-            a_status.cmp(&b_status)
-                .then_with(|| a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order()))
+            let a_status = a
+                .agent_session
+                .as_ref()
+                .map(|s| agent_sort_order(s.status))
+                .unwrap_or(99);
+            let b_status = b
+                .agent_session
+                .as_ref()
+                .map(|s| agent_sort_order(s.status))
+                .unwrap_or(99);
+            a_status.cmp(&b_status).then_with(|| {
+                a.linear_issue
+                    .priority
+                    .sort_order()
+                    .cmp(&b.linear_issue.priority.sort_order())
+            })
         });
 
         // Issues: sort by priority → status
         issues.sort_by(|a, b| {
-            a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order())
-                .then_with(|| a.linear_issue.status.sort_order().cmp(&b.linear_issue.status.sort_order()))
+            a.linear_issue
+                .priority
+                .sort_order()
+                .cmp(&b.linear_issue.priority.sort_order())
+                .then_with(|| {
+                    a.linear_issue
+                        .status
+                        .sort_order()
+                        .cmp(&b.linear_issue.status.sort_order())
+                })
         });
 
         vec![
@@ -633,7 +684,11 @@ impl AppState {
     /// Time complexity: O(n) where n = number of workstreams
     /// - Uses HashSet for O(1) filtered_indices membership check
     /// - Uses HashMap for O(1) id→index lookup
-    pub fn build_visual_items(&self, filtered_indices: &[usize], preserve_order: bool) -> Vec<VisualItem> {
+    pub fn build_visual_items(
+        &self,
+        filtered_indices: &[usize],
+        preserve_order: bool,
+    ) -> Vec<VisualItem> {
         // In search mode, display results in score order (no grouping)
         if preserve_order && !filtered_indices.is_empty() {
             return filtered_indices

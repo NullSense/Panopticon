@@ -102,8 +102,12 @@ pub enum Message {
     TogglePriorityFilter(LinearPriority),
     /// Toggle a project filter by index
     ToggleProjectFilter(usize),
+    /// Clear project filters
+    ClearProjectFilters,
     /// Toggle an assignee filter by index ("me", "unassigned", or user IDs)
     ToggleAssigneeFilter(usize),
+    /// Clear assignee filters
+    ClearAssigneeFilters,
     /// Toggle showing sub-issues
     ToggleSubIssues,
     /// Toggle showing completed issues

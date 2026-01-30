@@ -40,7 +40,9 @@ mod helpers {
 #[test]
 fn test_cache_from_sessions_empty() {
     let cache = AgentSessionCache::from_sessions(vec![], vec![]);
-    assert!(cache.find_for_directory(Some("/home/user/project")).is_none());
+    assert!(cache
+        .find_for_directory(Some("/home/user/project"))
+        .is_none());
 }
 
 #[test]
@@ -61,9 +63,10 @@ fn test_cache_find_claude_session() {
 
 #[test]
 fn test_cache_find_moltbot_session() {
-    let moltbot_sessions = vec![
-        helpers::make_moltbot_session("moltbot-1", "/home/user/project-c"),
-    ];
+    let moltbot_sessions = vec![helpers::make_moltbot_session(
+        "moltbot-1",
+        "/home/user/project-c",
+    )];
 
     let cache = AgentSessionCache::from_sessions(vec![], moltbot_sessions);
 
@@ -78,12 +81,14 @@ fn test_cache_find_moltbot_session() {
 fn test_cache_claude_takes_precedence_over_moltbot() {
     // When both Claude and Moltbot have sessions for same directory,
     // Claude should take precedence
-    let claude_sessions = vec![
-        helpers::make_claude_session("claude-1", "/home/user/shared-project"),
-    ];
-    let moltbot_sessions = vec![
-        helpers::make_moltbot_session("moltbot-1", "/home/user/shared-project"),
-    ];
+    let claude_sessions = vec![helpers::make_claude_session(
+        "claude-1",
+        "/home/user/shared-project",
+    )];
+    let moltbot_sessions = vec![helpers::make_moltbot_session(
+        "moltbot-1",
+        "/home/user/shared-project",
+    )];
 
     let cache = AgentSessionCache::from_sessions(claude_sessions, moltbot_sessions);
 
@@ -96,19 +101,25 @@ fn test_cache_claude_takes_precedence_over_moltbot() {
 
 #[test]
 fn test_cache_find_returns_none_for_missing_directory() {
-    let claude_sessions = vec![
-        helpers::make_claude_session("session-1", "/home/user/project-a"),
-    ];
+    let claude_sessions = vec![helpers::make_claude_session(
+        "session-1",
+        "/home/user/project-a",
+    )];
 
     let cache = AgentSessionCache::from_sessions(claude_sessions, vec![]);
 
-    assert!(cache.find_for_directory(Some("/home/user/unknown")).is_none());
+    assert!(cache
+        .find_for_directory(Some("/home/user/unknown"))
+        .is_none());
 }
 
 #[test]
 fn test_cache_find_with_none_directory() {
     let cache = AgentSessionCache::from_sessions(
-        vec![helpers::make_claude_session("session-1", "/home/user/project")],
+        vec![helpers::make_claude_session(
+            "session-1",
+            "/home/user/project",
+        )],
         vec![],
     );
 
@@ -119,7 +130,9 @@ fn test_cache_find_with_none_directory() {
 fn test_cache_multiple_sessions_lookup_is_o1() {
     // Create many sessions to verify O(1) lookup behavior
     let claude_sessions: Vec<_> = (0..100)
-        .map(|i| helpers::make_claude_session(&format!("session-{}", i), &format!("/project/{}", i)))
+        .map(|i| {
+            helpers::make_claude_session(&format!("session-{}", i), &format!("/project/{}", i))
+        })
         .collect();
 
     let cache = AgentSessionCache::from_sessions(claude_sessions, vec![]);
@@ -154,9 +167,10 @@ fn test_cache_sessions_without_directory_are_ignored() {
 #[test]
 fn test_cache_clones_session_on_lookup() {
     // Ensure we get owned copies, not references
-    let claude_sessions = vec![
-        helpers::make_claude_session("session-1", "/home/user/project"),
-    ];
+    let claude_sessions = vec![helpers::make_claude_session(
+        "session-1",
+        "/home/user/project",
+    )];
 
     let cache = AgentSessionCache::from_sessions(claude_sessions, vec![]);
 

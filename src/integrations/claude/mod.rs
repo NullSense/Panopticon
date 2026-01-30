@@ -37,7 +37,7 @@ pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
     let search_term = session
         .working_directory
         .as_ref()
-        .and_then(|d| d.split('/').last())
+        .and_then(|d| d.split('/').next_back())
         .unwrap_or(&session.id);
 
     let script = format!(

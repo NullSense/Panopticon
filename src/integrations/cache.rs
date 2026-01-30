@@ -50,7 +50,8 @@ impl WorkstreamCache {
     /// Check if the cache is expired based on max age
     pub fn is_expired(&self, max_age_hours: u64) -> bool {
         let age = Utc::now().signed_duration_since(self.last_sync);
-        age.num_hours() as u64 > max_age_hours
+        let hours = age.num_hours().max(0) as u64;
+        hours > max_age_hours
     }
 
     /// Check if the cache has any data
@@ -119,8 +120,7 @@ pub fn save_cache_to_path(path: &Path, cache: &WorkstreamCache) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let content = serde_json::to_string_pretty(cache)
-        .context("Failed to serialize cache")?;
+    let content = serde_json::to_string_pretty(cache).context("Failed to serialize cache")?;
 
     std::fs::write(path, content)
         .with_context(|| format!("Failed to write cache to {}", path.display()))?;
@@ -148,10 +148,7 @@ pub fn clear_cache(config: &Config) -> Result<()> {
 ///
 /// Updates existing entries and adds new ones.
 /// Does NOT remove entries (handles separately via full sync).
-pub fn merge_workstreams(
-    existing: &mut Vec<Workstream>,
-    updates: Vec<Workstream>,
-) {
+pub fn merge_workstreams(existing: &mut Vec<Workstream>, updates: Vec<Workstream>) {
     for update in updates {
         // Find existing entry by issue ID
         if let Some(pos) = existing
@@ -202,6 +199,8 @@ mod tests {
                 labels: Vec::new(),
                 project: None,
                 team: None,
+                assignee_id: None,
+                assignee_name: None,
                 estimate: None,
                 created_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
                 updated_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -236,8 +235,10 @@ mod tests {
 
     #[test]
     fn test_cache_expired() {
-        let mut cache = WorkstreamCache::default();
-        cache.last_sync = Utc::now() - chrono::Duration::hours(25);
+        let cache = WorkstreamCache {
+            last_sync: Utc::now() - chrono::Duration::hours(25),
+            ..Default::default()
+        };
 
         assert!(cache.is_expired(24));
         assert!(!cache.is_expired(48));

@@ -155,7 +155,10 @@ async fn test_linear(token: &str) {
 
                 // Check for errors in response
                 if let Some(errors) = parsed.get("errors") {
-                    println!("GraphQL Errors: {}", serde_json::to_string_pretty(errors).unwrap());
+                    println!(
+                        "GraphQL Errors: {}",
+                        serde_json::to_string_pretty(errors).unwrap()
+                    );
                     return;
                 }
 
@@ -171,10 +174,20 @@ async fn test_linear(token: &str) {
                         println!("  State: {:?}", issue["state"]);
                         println!("  Cycle: {:?}", issue["cycle"]);
                         println!("  Parent: {:?}", issue["parent"]);
-                        println!("  Children count: {}",
-                            issue["children"]["nodes"].as_array().map(|a| a.len()).unwrap_or(0));
-                        println!("  Attachments count: {}",
-                            issue["attachments"]["nodes"].as_array().map(|a| a.len()).unwrap_or(0));
+                        println!(
+                            "  Children count: {}",
+                            issue["children"]["nodes"]
+                                .as_array()
+                                .map(|a| a.len())
+                                .unwrap_or(0)
+                        );
+                        println!(
+                            "  Attachments count: {}",
+                            issue["attachments"]["nodes"]
+                                .as_array()
+                                .map(|a| a.len())
+                                .unwrap_or(0)
+                        );
                     }
 
                     // Try parsing first issue
@@ -184,7 +197,10 @@ async fn test_linear(token: &str) {
                     }
                 } else {
                     println!("No issues array found in response");
-                    println!("Full response: {}", serde_json::to_string_pretty(&parsed).unwrap());
+                    println!(
+                        "Full response: {}",
+                        serde_json::to_string_pretty(&parsed).unwrap()
+                    );
                 }
             } else {
                 println!("Error: {}", body);
