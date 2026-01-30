@@ -99,19 +99,20 @@ fn test_preselect_parent_when_opening_link_menu() {
     let mut app = App::new(config);
 
     // Create parent with children, and add the parent to workstreams
+    // Use same priority so insertion order is preserved
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
         LinearPriority::Medium,
         None,
-        vec![("child-id", "CHILD-1", LinearPriority::High)],
+        vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
 
     // Create child that references parent
     let child = make_workstream_with_hierarchy(
         "child-id",
         "CHILD-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("parent-id", "PARENT-1")),
         vec![],
     );
@@ -120,7 +121,7 @@ fn test_preselect_parent_when_opening_link_menu() {
     app.filtered_indices = vec![0, 1];
     app.rebuild_visual_items();
 
-    // Select the child (index 1)
+    // Select the child (index 1 in workstreams, visual index 2 after section header)
     app.visual_selected = 2; // Skip section header
 
     // Open link menu - should preselect parent since child has a parent
@@ -171,18 +172,19 @@ fn test_navigate_to_parent_success() {
     let mut app = App::new(config);
 
     // Create parent and child, both in workstreams
+    // Use same priority so insertion order is preserved
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
         LinearPriority::Medium,
         None,
-        vec![("child-id", "CHILD-1", LinearPriority::High)],
+        vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
 
     let child = make_workstream_with_hierarchy(
         "child-id",
         "CHILD-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("parent-id", "PARENT-1")),
         vec![],
     );
@@ -190,7 +192,7 @@ fn test_navigate_to_parent_success() {
     app.state.workstreams = vec![parent, child];
     app.filtered_indices = vec![0, 1];
     app.rebuild_visual_items();
-    app.visual_selected = 2; // Select child
+    app.visual_selected = 2; // Select child (index 1 in workstreams, visual index 2)
 
     // Open link menu on child
     app.open_link_menu();
@@ -240,18 +242,19 @@ fn test_navigate_to_child_success() {
     let mut app = App::new(config);
 
     // Create parent with children, children also in workstreams
+    // Use same priority so insertion order is preserved
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
         LinearPriority::Medium,
         None,
-        vec![("child-id", "CHILD-1", LinearPriority::High)],
+        vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
 
     let child = make_workstream_with_hierarchy(
         "child-id",
         "CHILD-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("parent-id", "PARENT-1")),
         vec![],
     );
@@ -259,7 +262,7 @@ fn test_navigate_to_child_success() {
     app.state.workstreams = vec![parent, child];
     app.filtered_indices = vec![0, 1];
     app.rebuild_visual_items();
-    app.visual_selected = 1; // Select parent
+    app.visual_selected = 1; // Select parent (visual index 1 after section header)
 
     // Open link menu on parent
     app.open_link_menu();
@@ -473,19 +476,19 @@ fn test_navigation_preserves_stack() {
     let config = test_config();
     let mut app = App::new(config);
 
-    // Create 3-level hierarchy
+    // Create 3-level hierarchy (same priority so insertion order is preserved)
     let grandparent = make_workstream_with_hierarchy(
         "gp-id",
         "GP-1",
         LinearPriority::Medium,
         None,
-        vec![("parent-id", "PARENT-1", LinearPriority::High)],
+        vec![("parent-id", "PARENT-1", LinearPriority::Medium)],
     );
 
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("gp-id", "GP-1")),
         vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
@@ -535,19 +538,19 @@ fn test_navigate_back_preselects_parent_or_child() {
     let config = test_config();
     let mut app = App::new(config);
 
-    // Create 3-level hierarchy: grandparent -> parent -> child
+    // Create 3-level hierarchy: grandparent -> parent -> child (same priority)
     let grandparent = make_workstream_with_hierarchy(
         "gp-id",
         "GP-1",
         LinearPriority::Medium,
         None,
-        vec![("parent-id", "PARENT-1", LinearPriority::High)],
+        vec![("parent-id", "PARENT-1", LinearPriority::Medium)],
     );
 
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("gp-id", "GP-1")),
         vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
@@ -595,19 +598,19 @@ fn test_navigate_back_to_issue_with_parent_preselects_parent() {
     let config = test_config();
     let mut app = App::new(config);
 
-    // Create hierarchy: grandparent -> parent -> child
+    // Create hierarchy: grandparent -> parent -> child (same priority)
     let grandparent = make_workstream_with_hierarchy(
         "gp-id",
         "GP-1",
         LinearPriority::Medium,
         None,
-        vec![("parent-id", "PARENT-1", LinearPriority::High)],
+        vec![("parent-id", "PARENT-1", LinearPriority::Medium)],
     );
 
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("gp-id", "GP-1")),
         vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
@@ -623,7 +626,7 @@ fn test_navigate_back_to_issue_with_parent_preselects_parent() {
     app.state.workstreams = vec![grandparent, parent, child];
     app.filtered_indices = vec![0, 1, 2];
     app.rebuild_visual_items();
-    app.visual_selected = 2; // Select parent
+    app.visual_selected = 2; // Select parent (visual index 2)
 
     // Open link menu on parent (has both parent and children)
     app.open_link_menu();
@@ -656,19 +659,19 @@ fn test_navigate_back_clears_to_original_issue() {
     let config = test_config();
     let mut app = App::new(config);
 
-    // Parent with one child
+    // Parent with one child (same priority)
     let parent = make_workstream_with_hierarchy(
         "parent-id",
         "PARENT-1",
         LinearPriority::Medium,
         None,
-        vec![("child-id", "CHILD-1", LinearPriority::High)],
+        vec![("child-id", "CHILD-1", LinearPriority::Medium)],
     );
 
     let child = make_workstream_with_hierarchy(
         "child-id",
         "CHILD-1",
-        LinearPriority::High,
+        LinearPriority::Medium,
         Some(("parent-id", "PARENT-1")),
         vec![],
     );

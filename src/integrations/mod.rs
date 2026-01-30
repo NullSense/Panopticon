@@ -7,8 +7,9 @@ pub mod moltbot;
 pub mod vercel;
 
 use crate::config::Config;
-use crate::data::Workstream;
+use crate::data::{AgentSession, LinearIssue, LinearPriority, LinearStatus, Workstream};
 use crate::tui::{RefreshProgress, RefreshResult};
+use chrono::Utc;
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use once_cell::sync::Lazy;
@@ -61,8 +62,9 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             None
         };
 
-        // Find agent session via O(1) cache lookup (instead of file read + HTTP call)
-        let agent = agent_cache.find_for_directory(issue.working_directory.as_deref());
+        // Find agent session via O(1) cache lookup by git branch
+        // Linear's working_directory is the branch name, match against session's git_branch
+        let agent = agent_cache.find_for_branch(issue.working_directory.as_deref());
 
         workstreams.push(Workstream {
             linear_issue: issue.issue,
@@ -71,6 +73,24 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
             agent_session: agent,
             stale: false,
         });
+    }
+
+    // Add unlinked sessions (sessions not matched to any issue)
+    let matched_session_ids: std::collections::HashSet<String> = workstreams
+        .iter()
+        .filter_map(|ws| ws.agent_session.as_ref().map(|s| s.id.clone()))
+        .collect();
+
+    for session in agent_cache.all_sessions() {
+        if !matched_session_ids.contains(&session.id) {
+            workstreams.push(Workstream {
+                linear_issue: create_placeholder_issue(session),
+                github_pr: None,
+                vercel_deployment: None,
+                agent_session: Some(session.clone()),
+                stale: false,
+            });
+        }
     }
 
     Ok(workstreams)
@@ -124,12 +144,16 @@ pub async fn fetch_workstreams_incremental(
     }
 
     // Step 3: Process issues in parallel (batch of 5 concurrent)
+    // Track matched session IDs to find unlinked sessions later
+    let matched_session_ids = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+
     let config = config.clone();
     stream::iter(issues.into_iter().enumerate())
         .map(|(i, issue)| {
             let config = config.clone();
             let tx = tx.clone();
             let agent_cache = Arc::clone(&agent_cache);
+            let matched_ids = Arc::clone(&matched_session_ids);
             async move {
                 // Send progress
                 if let Err(e) = tx
@@ -174,8 +198,13 @@ pub async fn fetch_workstreams_incremental(
                     None
                 };
 
-                // Find agent session via O(1) cache lookup (instead of file read + HTTP call)
-                let agent = agent_cache.find_for_directory(issue.working_directory.as_deref());
+                // Find agent session via O(1) cache lookup by git branch
+                let agent = agent_cache.find_for_branch(issue.working_directory.as_deref());
+
+                // Track matched session ID
+                if let Some(ref session) = agent {
+                    matched_ids.lock().await.insert(session.id.clone());
+                }
 
                 let ws = Workstream {
                     linear_issue: issue.issue,
@@ -194,6 +223,23 @@ pub async fn fetch_workstreams_incremental(
         .collect::<Vec<_>>()
         .await;
 
+    // Step 4: Add unlinked sessions (sessions not matched to any issue)
+    let matched_ids = matched_session_ids.lock().await;
+    for session in agent_cache.all_sessions() {
+        if !matched_ids.contains(&session.id) {
+            let ws = Workstream {
+                linear_issue: create_placeholder_issue(session),
+                github_pr: None,
+                vercel_deployment: None,
+                agent_session: Some(session.clone()),
+                stale: false,
+            };
+            if let Err(e) = tx.send(RefreshResult::Workstream(ws)).await {
+                tracing::debug!("Unlinked session channel closed: {}", e);
+            }
+        }
+    }
+
     if let Err(e) = tx.send(RefreshResult::Complete).await {
         tracing::debug!("Complete channel closed: {}", e);
     }
@@ -205,4 +251,50 @@ pub struct LinkedLinearIssue {
     pub issue: crate::data::LinearIssue,
     pub linked_pr_url: Option<String>,
     pub working_directory: Option<String>,
+}
+
+/// Create a placeholder issue for unlinked agent sessions
+/// These sessions appear in the Agent Sessions section but aren't linked to Linear issues
+fn create_placeholder_issue(session: &AgentSession) -> LinearIssue {
+    // Build title showing path + branch: ~/Projects/sandbox (main)
+    let shortened_path = session.working_directory.as_ref().map(|p| {
+        // Shorten path: /home/user/Projects/foo -> ~/Projects/foo
+        if let Some(home) = dirs::home_dir() {
+            if let Some(home_str) = home.to_str() {
+                if p.starts_with(home_str) {
+                    return format!("~{}", &p[home_str.len()..]);
+                }
+            }
+        }
+        p.clone()
+    });
+
+    let title = match (&shortened_path, &session.git_branch) {
+        (Some(path), Some(branch)) => format!("{} ({})", path, branch),
+        (Some(path), None) => path.clone(),
+        (None, Some(branch)) => branch.clone(),
+        (None, None) => "Unknown session".to_string(),
+    };
+
+    let description = session.working_directory.clone();
+
+    LinearIssue {
+        id: format!("unlinked-{}", session.id),
+        identifier: String::new(), // Empty = unlinked indicator
+        title,
+        description,
+        status: LinearStatus::InProgress,
+        priority: LinearPriority::NoPriority,
+        url: String::new(),
+        created_at: session.started_at,
+        updated_at: Utc::now(),
+        cycle: None,
+        labels: vec![],
+        project: None,
+        team: None,
+        estimate: None,
+        attachments: vec![],
+        parent: None,
+        children: vec![],
+    }
 }

@@ -82,6 +82,7 @@ pub async fn fetch_sessions(port: Option<u16>) -> Result<Vec<AgentSession>> {
                 agent_type: AgentType::Clawdbot,
                 status,
                 working_directory,
+                git_branch: None, // Moltbot doesn't track git branches yet
                 last_output: None,
                 started_at,
                 window_id: None,

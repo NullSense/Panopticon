@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::data::{AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SortMode, VisualItem, Workstream};
+use crate::data::{AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SectionType, SortMode, VisualItem, Workstream};
 use crate::integrations;
 use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
@@ -958,19 +958,25 @@ impl App {
 
     /// Toggle fold of the section containing the current item
     pub fn toggle_section_fold(&mut self) {
-        let status = match self.visual_items.get(self.visual_selected) {
-            Some(VisualItem::SectionHeader(status)) => Some(*status),
+        let section = match self.visual_items.get(self.visual_selected) {
+            Some(VisualItem::SectionHeader(section)) => Some(*section),
             Some(VisualItem::Workstream(idx)) => {
-                self.state.workstreams.get(*idx).map(|ws| ws.linear_issue.status)
+                self.state.workstreams.get(*idx).map(|ws| {
+                    if ws.agent_session.is_some() {
+                        SectionType::AgentSessions
+                    } else {
+                        SectionType::Issues
+                    }
+                })
             }
             None => None,
         };
 
-        if let Some(status) = status {
-            if self.state.collapsed_sections.contains(&status) {
-                self.state.collapsed_sections.remove(&status);
+        if let Some(section) = section {
+            if self.state.collapsed_sections.contains(&section) {
+                self.state.collapsed_sections.remove(&section);
             } else {
-                self.state.collapsed_sections.insert(status);
+                self.state.collapsed_sections.insert(section);
             }
             self.rebuild_visual_items();
         }
@@ -984,12 +990,18 @@ impl App {
         }
     }
 
-    /// Get the currently selected section (for section headers)
-    pub fn selected_section(&self) -> Option<LinearStatus> {
+    /// Get the currently selected section
+    pub fn selected_section(&self) -> Option<SectionType> {
         match self.visual_items.get(self.visual_selected) {
-            Some(VisualItem::SectionHeader(status)) => Some(*status),
+            Some(VisualItem::SectionHeader(section)) => Some(*section),
             Some(VisualItem::Workstream(idx)) => {
-                self.state.workstreams.get(*idx).map(|ws| ws.linear_issue.status)
+                self.state.workstreams.get(*idx).map(|ws| {
+                    if ws.agent_session.is_some() {
+                        SectionType::AgentSessions
+                    } else {
+                        SectionType::Issues
+                    }
+                })
             }
             None => None,
         }

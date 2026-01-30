@@ -78,6 +78,18 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+/// Get the current git branch for a directory
+fn get_git_branch(dir: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty() && s != "HEAD") // Filter out detached HEAD
+}
+
 /// Handle internal hook command (called by Claude hooks)
 pub fn handle_hook(event: &str, session_id: &str, cwd: &str) -> Result<()> {
     // Map hook events to status strings
@@ -90,6 +102,9 @@ pub fn handle_hook(event: &str, session_id: &str, cwd: &str) -> Result<()> {
         _ => "idle",
     };
 
-    state::update_session(session_id, cwd, status)?;
+    // Capture git branch on every event (keeps branch in sync if user switches)
+    let git_branch = get_git_branch(cwd);
+
+    state::update_session(session_id, cwd, git_branch.as_deref(), status)?;
     Ok(())
 }

@@ -16,6 +16,7 @@ mod helpers {
             agent_type: AgentType::ClaudeCode,
             status: AgentStatus::Running,
             working_directory: Some(dir.to_string()),
+            git_branch: None,
             last_output: None,
             started_at: Utc::now(),
             window_id: None,
@@ -28,6 +29,7 @@ mod helpers {
             agent_type: AgentType::Clawdbot,
             status: AgentStatus::Idle,
             working_directory: Some(dir.to_string()),
+            git_branch: None,
             last_output: None,
             started_at: Utc::now(),
             window_id: None,
@@ -137,6 +139,7 @@ fn test_cache_sessions_without_directory_are_ignored() {
         agent_type: AgentType::ClaudeCode,
         status: AgentStatus::Running,
         working_directory: None, // No directory
+        git_branch: None,
         last_output: None,
         started_at: chrono::Utc::now(),
         window_id: None,

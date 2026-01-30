@@ -328,6 +328,7 @@ pub struct AgentSession {
     pub agent_type: AgentType,
     pub status: AgentStatus,
     pub working_directory: Option<String>,
+    pub git_branch: Option<String>,
     pub last_output: Option<String>,
     pub started_at: DateTime<Utc>,
     pub window_id: Option<String>, // For teleporting
@@ -402,11 +403,29 @@ pub enum SortMode {
     ByPRActivity,
 }
 
+/// Section type for the two-section agent-first view
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SectionType {
+    /// Issues with active agent sessions
+    AgentSessions,
+    /// Issues without agents
+    Issues,
+}
+
+impl SectionType {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::AgentSessions => "Agent Sessions",
+            Self::Issues => "Issues",
+        }
+    }
+}
+
 /// Visual item for navigation - maps exactly to what's rendered
 #[derive(Debug, Clone)]
 pub enum VisualItem {
     /// Section header (non-selectable, but included for offset calculation)
-    SectionHeader(LinearStatus),
+    SectionHeader(SectionType),
     /// Workstream row (selectable) - contains index into workstreams vec
     Workstream(usize),
 }
@@ -455,7 +474,7 @@ pub struct AppState {
     pub search_query: String,
     pub search_mode: bool,
     pub last_refresh: Option<DateTime<Utc>>,
-    pub collapsed_sections: HashSet<LinearStatus>,
+    pub collapsed_sections: HashSet<SectionType>,
     pub sort_mode: SortMode,
 }
 
@@ -576,12 +595,40 @@ impl AppState {
         result
     }
 
+    /// Group workstreams into two sections: Agent Sessions and Issues
+    ///
+    /// Agent Sessions: Issues with an active agent, sorted by agent status → priority
+    /// Issues: Issues without agents, sorted by priority → status
+    pub fn grouped_by_section(&self) -> Vec<(SectionType, Vec<&Workstream>)> {
+        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) =
+            self.workstreams.iter().partition(|ws: &&Workstream| ws.agent_session.is_some());
+
+        // Agent Sessions: sort by agent status → priority
+        agent_sessions.sort_by(|a, b| {
+            let a_status = a.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
+            let b_status = b.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
+            a_status.cmp(&b_status)
+                .then_with(|| a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order()))
+        });
+
+        // Issues: sort by priority → status
+        issues.sort_by(|a, b| {
+            a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order())
+                .then_with(|| a.linear_issue.status.sort_order().cmp(&b.linear_issue.status.sort_order()))
+        });
+
+        vec![
+            (SectionType::AgentSessions, agent_sessions),
+            (SectionType::Issues, issues),
+        ]
+    }
+
     /// Build visual items list that matches exactly what's rendered
     /// This enables proper j/k navigation through the visual representation
     ///
     /// When `preserve_order` is true (search mode), items are displayed in the
     /// order given by `filtered_indices` (by relevance score) without section headers.
-    /// When false (normal mode), items are grouped by status with section headers.
+    /// When false (normal mode), items are grouped into Agent Sessions and Issues sections.
     ///
     /// Time complexity: O(n) where n = number of workstreams
     /// - Uses HashSet for O(1) filtered_indices membership check
@@ -596,11 +643,9 @@ impl AppState {
         }
 
         // Convert filtered_indices to HashSet for O(1) membership check
-        // (previously O(m) linear search per workstream)
         let filtered_set: HashSet<usize> = filtered_indices.iter().copied().collect();
 
         // Build id→index map for O(1) lookup
-        // (previously O(n) linear search via position() per workstream)
         let index_map: HashMap<&str, usize> = self
             .workstreams
             .iter()
@@ -608,28 +653,34 @@ impl AppState {
             .map(|(idx, ws)| (ws.linear_issue.id.as_str(), idx))
             .collect();
 
-        // Normal mode: group by status with section headers
+        // Group by agent presence with section headers
         let mut items = Vec::new();
-        let grouped = self.grouped_workstreams();
+        let grouped = self.grouped_by_section();
 
-        for (status, workstreams) in grouped {
-            // Add section header
-            items.push(VisualItem::SectionHeader(status));
+        for (section_type, workstreams) in grouped {
+            // Collect filtered workstream indices for this section
+            let section_items: Vec<usize> = workstreams
+                .iter()
+                .filter_map(|ws| index_map.get(ws.linear_issue.id.as_str()).copied())
+                .filter(|idx| filtered_set.contains(idx))
+                .collect();
 
-            // Skip items if collapsed
-            if self.collapsed_sections.contains(&status) {
+            // Skip empty sections
+            if section_items.is_empty() {
                 continue;
             }
 
-            // Add workstream items (only if in filtered list)
-            for ws in workstreams {
-                // O(1) lookup via HashMap instead of O(n) position()
-                if let Some(&idx) = index_map.get(ws.linear_issue.id.as_str()) {
-                    // O(1) membership check via HashSet instead of O(m) contains()
-                    if filtered_set.contains(&idx) {
-                        items.push(VisualItem::Workstream(idx));
-                    }
-                }
+            // Add section header
+            items.push(VisualItem::SectionHeader(section_type));
+
+            // Skip items if collapsed
+            if self.collapsed_sections.contains(&section_type) {
+                continue;
+            }
+
+            // Add workstream items
+            for idx in section_items {
+                items.push(VisualItem::Workstream(idx));
             }
         }
 

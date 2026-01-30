@@ -19,6 +19,7 @@ mod state_behavior {
             "test-session-1".to_string(),
             ClaudeSessionState {
                 path: "/home/user/project".to_string(),
+                git_branch: None,
                 status: "done".to_string(),
                 last_active: chrono::Utc::now().timestamp(),
             },
@@ -41,6 +42,7 @@ mod state_behavior {
             "test-session-2".to_string(),
             ClaudeSessionState {
                 path: "/home/user/project".to_string(),
+                git_branch: None,
                 status: "running".to_string(),
                 last_active: chrono::Utc::now().timestamp(),
             },
@@ -65,6 +67,7 @@ mod state_behavior {
             "test-session-3".to_string(),
             ClaudeSessionState {
                 path: "/home/user/project".to_string(),
+                git_branch: None,
                 status: "stop".to_string(), // If "stop" somehow gets stored
                 last_active: chrono::Utc::now().timestamp(),
             },
@@ -100,6 +103,7 @@ mod state_behavior {
                 format!("session-{}", status_str),
                 ClaudeSessionState {
                     path: "/project".to_string(),
+                    git_branch: None,
                     status: status_str.to_string(),
                     last_active: chrono::Utc::now().timestamp(),
                 },

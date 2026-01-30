@@ -1,11 +1,12 @@
-//! Tests for build_visual_items performance optimization
+//! Tests for build_visual_items and agent-first section grouping
 //!
-//! Verifies that the optimized implementation produces the same results
-//! as the original but with O(n) complexity instead of O(n²).
+//! Verifies that workstreams are correctly grouped into Agent Sessions and Issues sections,
+//! with proper sorting within each section.
 
 use chrono::Utc;
 use panopticon::data::{
-    AppState, LinearIssue, LinearPriority, LinearStatus, VisualItem, Workstream,
+    AgentSession, AgentStatus, AgentType, AppState, LinearIssue, LinearPriority, LinearStatus,
+    SectionType, VisualItem, Workstream,
 };
 
 fn make_workstream(id: &str, identifier: &str, status: LinearStatus) -> Workstream {
@@ -32,14 +33,48 @@ fn make_workstream(id: &str, identifier: &str, status: LinearStatus) -> Workstre
         github_pr: None,
         vercel_deployment: None,
         agent_session: None,
-            stale: false,
+        stale: false,
     }
+}
+
+fn make_workstream_with_agent(
+    id: &str,
+    identifier: &str,
+    status: LinearStatus,
+    priority: LinearPriority,
+    agent_status: AgentStatus,
+) -> Workstream {
+    let mut ws = make_workstream(id, identifier, status);
+    ws.linear_issue.priority = priority;
+    ws.agent_session = Some(AgentSession {
+        id: format!("session-{}", id),
+        agent_type: AgentType::ClaudeCode,
+        status: agent_status,
+        working_directory: None,
+        git_branch: None,
+        last_output: None,
+        started_at: Utc::now(),
+        window_id: None,
+    });
+    ws
+}
+
+fn make_workstream_with_priority(
+    id: &str,
+    identifier: &str,
+    status: LinearStatus,
+    priority: LinearPriority,
+) -> Workstream {
+    let mut ws = make_workstream(id, identifier, status);
+    ws.linear_issue.priority = priority;
+    ws
 }
 
 #[test]
 fn test_build_visual_items_empty_state() {
     let state = AppState::default();
     let items = state.build_visual_items(&[], false);
+    // Empty sections are skipped
     assert!(items.is_empty());
 }
 
@@ -76,29 +111,37 @@ fn test_build_visual_items_preserves_search_order() {
 }
 
 #[test]
-fn test_build_visual_items_groups_by_status() {
+fn test_build_visual_items_groups_by_section() {
     let mut state = AppState::default();
     state.workstreams = vec![
-        make_workstream("id-0", "TEST-0", LinearStatus::InProgress),
+        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
         make_workstream("id-1", "TEST-1", LinearStatus::Todo),
-        make_workstream("id-2", "TEST-2", LinearStatus::InProgress),
+        make_workstream_with_agent("id-2", "TEST-2", LinearStatus::InProgress, LinearPriority::Medium, AgentStatus::Idle),
     ];
 
     let filtered = vec![0, 1, 2]; // All items
     let items = state.build_visual_items(&filtered, false);
 
-    // Should have section headers and workstreams
-    // InProgress (2 items) and Todo (1 item)
-    let mut section_count = 0;
+    // Should have 2 section headers (AgentSessions and Issues)
+    let mut agent_sessions_header_found = false;
+    let mut issues_header_found = false;
     let mut workstream_count = 0;
+
     for item in &items {
         match item {
-            VisualItem::SectionHeader(_) => section_count += 1,
+            VisualItem::SectionHeader(section) => {
+                match section {
+                    SectionType::AgentSessions => agent_sessions_header_found = true,
+                    SectionType::Issues => issues_header_found = true,
+                }
+            }
             VisualItem::Workstream(_) => workstream_count += 1,
         }
     }
+
+    assert!(agent_sessions_header_found, "AgentSessions section header should exist");
+    assert!(issues_header_found, "Issues section header should exist");
     assert_eq!(workstream_count, 3);
-    assert!(section_count >= 2); // At least InProgress and Todo sections
 }
 
 #[test]
@@ -138,39 +181,39 @@ fn test_build_visual_items_filters_correctly() {
 fn test_build_visual_items_collapsed_sections() {
     let mut state = AppState::default();
     state.workstreams = vec![
-        make_workstream("id-0", "TEST-0", LinearStatus::InProgress),
+        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
         make_workstream("id-1", "TEST-1", LinearStatus::Todo),
     ];
-    state.collapsed_sections.insert(LinearStatus::InProgress);
+    state.collapsed_sections.insert(SectionType::AgentSessions);
 
     let filtered = vec![0, 1];
     let items = state.build_visual_items(&filtered, false);
 
-    // InProgress section should be collapsed (header present but no items)
-    let mut in_progress_count = 0;
-    let mut todo_count = 0;
-    let mut in_progress_header_found = false;
+    // AgentSessions section should be collapsed (header present but no items)
+    let mut agent_sessions_count = 0;
+    let mut issues_count = 0;
+    let mut agent_sessions_header_found = false;
 
     for item in &items {
         match item {
-            VisualItem::SectionHeader(status) => {
-                if *status == LinearStatus::InProgress {
-                    in_progress_header_found = true;
+            VisualItem::SectionHeader(section) => {
+                if *section == SectionType::AgentSessions {
+                    agent_sessions_header_found = true;
                 }
             }
             VisualItem::Workstream(idx) => {
-                if state.workstreams[*idx].linear_issue.status == LinearStatus::InProgress {
-                    in_progress_count += 1;
-                } else if state.workstreams[*idx].linear_issue.status == LinearStatus::Todo {
-                    todo_count += 1;
+                if state.workstreams[*idx].agent_session.is_some() {
+                    agent_sessions_count += 1;
+                } else {
+                    issues_count += 1;
                 }
             }
         }
     }
 
-    assert!(in_progress_header_found, "InProgress section header should exist");
-    assert_eq!(in_progress_count, 0, "InProgress items should be hidden (collapsed)");
-    assert_eq!(todo_count, 1, "Todo items should be visible");
+    assert!(agent_sessions_header_found, "AgentSessions section header should exist");
+    assert_eq!(agent_sessions_count, 0, "AgentSessions items should be hidden (collapsed)");
+    assert_eq!(issues_count, 1, "Issues items should be visible");
 }
 
 #[test]
@@ -233,4 +276,124 @@ fn test_build_visual_items_maintains_id_to_index_mapping() {
             );
         }
     }
+}
+
+#[test]
+fn test_agent_sessions_sorted_by_status_then_priority() {
+    let mut state = AppState::default();
+    state.workstreams = vec![
+        // Agent with Running status, Medium priority
+        make_workstream_with_agent("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::Medium, AgentStatus::Running),
+        // Agent with WaitingForInput status (highest priority), Low priority
+        make_workstream_with_agent("id-1", "TEST-1", LinearStatus::InProgress, LinearPriority::Low, AgentStatus::WaitingForInput),
+        // Agent with Running status, High priority
+        make_workstream_with_agent("id-2", "TEST-2", LinearStatus::InProgress, LinearPriority::High, AgentStatus::Running),
+    ];
+
+    let filtered = vec![0, 1, 2];
+    let items = state.build_visual_items(&filtered, false);
+
+    // Extract workstream indices in order (skip section headers)
+    let workstream_order: Vec<usize> = items
+        .iter()
+        .filter_map(|item| {
+            if let VisualItem::Workstream(idx) = item {
+                Some(*idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Expected order:
+    // 1. id-1 (WaitingForInput - most urgent agent status)
+    // 2. id-2 (Running, High priority)
+    // 3. id-0 (Running, Medium priority)
+    assert_eq!(workstream_order, vec![1, 2, 0], "Should be sorted by agent status then priority");
+}
+
+#[test]
+fn test_issues_sorted_by_priority_then_status() {
+    let mut state = AppState::default();
+    state.workstreams = vec![
+        // Medium priority, InProgress
+        make_workstream_with_priority("id-0", "TEST-0", LinearStatus::InProgress, LinearPriority::Medium),
+        // Urgent priority, Backlog
+        make_workstream_with_priority("id-1", "TEST-1", LinearStatus::Backlog, LinearPriority::Urgent),
+        // Medium priority, Todo (lower status than InProgress)
+        make_workstream_with_priority("id-2", "TEST-2", LinearStatus::Todo, LinearPriority::Medium),
+    ];
+
+    let filtered = vec![0, 1, 2];
+    let items = state.build_visual_items(&filtered, false);
+
+    // Extract workstream indices in order
+    let workstream_order: Vec<usize> = items
+        .iter()
+        .filter_map(|item| {
+            if let VisualItem::Workstream(idx) = item {
+                Some(*idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Expected order (Issues section, sorted by priority → status):
+    // 1. id-1 (Urgent priority - highest)
+    // 2. id-0 (Medium priority, InProgress - better status)
+    // 3. id-2 (Medium priority, Todo - lower status)
+    assert_eq!(workstream_order, vec![1, 0, 2], "Should be sorted by priority then status");
+}
+
+#[test]
+fn test_agent_sessions_appear_before_issues() {
+    let mut state = AppState::default();
+    state.workstreams = vec![
+        // Issue without agent (should be in Issues section)
+        make_workstream("id-0", "TEST-0", LinearStatus::InProgress),
+        // Issue with agent (should be in AgentSessions section)
+        make_workstream_with_agent("id-1", "TEST-1", LinearStatus::Todo, LinearPriority::Low, AgentStatus::Idle),
+        // Another issue without agent
+        make_workstream("id-2", "TEST-2", LinearStatus::Backlog),
+    ];
+
+    let filtered = vec![0, 1, 2];
+    let items = state.build_visual_items(&filtered, false);
+
+    // Find where agent sessions end and issues begin
+    let mut in_agent_section = false;
+    let mut found_issue_after_agent = false;
+    let mut agent_workstream_indices: Vec<usize> = vec![];
+    let mut issue_workstream_indices: Vec<usize> = vec![];
+
+    for item in &items {
+        match item {
+            VisualItem::SectionHeader(SectionType::AgentSessions) => {
+                in_agent_section = true;
+            }
+            VisualItem::SectionHeader(SectionType::Issues) => {
+                in_agent_section = false;
+            }
+            VisualItem::Workstream(idx) => {
+                if in_agent_section {
+                    agent_workstream_indices.push(*idx);
+                    if found_issue_after_agent {
+                        panic!("Agent session appeared after Issues section");
+                    }
+                } else {
+                    issue_workstream_indices.push(*idx);
+                    if !agent_workstream_indices.is_empty() {
+                        found_issue_after_agent = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Agent sessions section should contain only id-1
+    assert_eq!(agent_workstream_indices, vec![1], "Only agent workstream should be in AgentSessions");
+    // Issues section should contain id-0 and id-2
+    assert!(issue_workstream_indices.contains(&0), "Issue 0 should be in Issues section");
+    assert!(issue_workstream_indices.contains(&2), "Issue 2 should be in Issues section");
 }

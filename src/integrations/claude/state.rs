@@ -17,6 +17,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeSessionState {
     pub path: String,
+    #[serde(default)]
+    pub git_branch: Option<String>,
     pub status: String,
     pub last_active: i64, // Unix timestamp in seconds
 }
@@ -86,7 +88,7 @@ pub fn write_state(state: &ClaudeState) -> Result<()> {
 }
 
 /// Update a single session in the state file
-pub fn update_session(session_id: &str, path: &str, status: &str) -> Result<()> {
+pub fn update_session(session_id: &str, path: &str, git_branch: Option<&str>, status: &str) -> Result<()> {
     let mut state = read_state().unwrap_or_default();
 
     let now = Utc::now().timestamp();
@@ -96,12 +98,17 @@ pub fn update_session(session_id: &str, path: &str, status: &str) -> Result<()> 
         if let Some(session) = state.sessions.get_mut(session_id) {
             session.status = "done".to_string();
             session.last_active = now;
+            // Update git_branch if provided (in case branch changed)
+            if git_branch.is_some() {
+                session.git_branch = git_branch.map(|s| s.to_string());
+            }
         }
     } else {
         state.sessions.insert(
             session_id.to_string(),
             ClaudeSessionState {
                 path: path.to_string(),
+                git_branch: git_branch.map(|s| s.to_string()),
                 status: status.to_string(),
                 last_active: now,
             },
@@ -116,12 +123,30 @@ pub fn update_session(session_id: &str, path: &str, status: &str) -> Result<()> 
 }
 
 /// Convert state to AgentSessions
+/// Deduplicates by working directory, keeping only the most recent session per directory.
+/// Also marks sessions as Done if they haven't had activity in 30 minutes.
 pub fn sessions_from_state(state: &ClaudeState) -> Vec<AgentSession> {
-    state
-        .sessions
-        .iter()
+    let now = Utc::now().timestamp();
+    let stale_threshold = 30 * 60; // 30 minutes in seconds
+
+    // First, deduplicate by path - keep only the most recent session per directory
+    let mut by_path: HashMap<String, (&String, &ClaudeSessionState)> = HashMap::new();
+    for (id, session) in &state.sessions {
+        let dominated = by_path
+            .get(&session.path)
+            .is_some_and(|(_, existing)| existing.last_active >= session.last_active);
+        if !dominated {
+            by_path.insert(session.path.clone(), (id, session));
+        }
+    }
+
+    by_path
+        .into_values()
         .map(|(id, s)| {
+            // Mark as Done if no activity in 30 minutes (likely closed without Stop hook)
+            let is_stale = now - s.last_active > stale_threshold;
             let status = match s.status.as_str() {
+                "running" | "start" | "active" if is_stale => AgentStatus::Done,
                 "running" | "start" | "active" => AgentStatus::Running,
                 "idle" => AgentStatus::Idle,
                 "waiting" => AgentStatus::WaitingForInput,
@@ -139,6 +164,7 @@ pub fn sessions_from_state(state: &ClaudeState) -> Vec<AgentSession> {
                 agent_type: AgentType::ClaudeCode,
                 status,
                 working_directory: Some(s.path.clone()),
+                git_branch: s.git_branch.clone(),
                 last_output: None,
                 started_at,
                 window_id: None,
