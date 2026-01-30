@@ -119,6 +119,76 @@ show_completed = false      # Hide completed issues by default
 show_canceled = false       # Hide canceled/duplicate issues
 ```
 
+## Claude Code Integration
+
+Panopticon can track active Claude Code sessions by integrating with Claude Code's hooks system. This lets you see which issues have agents actively working on them.
+
+### Installation for Hooks
+
+The `panopticon` binary must be in your PATH for hooks to work:
+
+```bash
+# Install to ~/.cargo/bin (recommended)
+cargo install --path .
+
+# Verify it's accessible
+which panopticon
+```
+
+> **Note:** After making changes to panopticon, re-run `cargo install --path .` to update the installed binary.
+
+### Configure Claude Code Hooks
+
+Add the following to your `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "panopticon internal-hook --event start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "panopticon internal-hook --event stop"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "panopticon internal-hook --event active"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### How It Works
+
+- **SessionStart**: Registers a new Claude session with the working directory
+- **UserPromptSubmit**: Updates session status to "active" (agent is working)
+- **Stop**: Marks the session as ended
+
+Panopticon matches sessions to Linear issues by looking for issue identifiers (e.g., `DRE-174`) in the working directory path or git branch name.
+
 ## Development
 
 ```bash
