@@ -215,23 +215,8 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     icons::EXPANDED
                 };
 
-                let count = app
-                    .state
-                    .workstreams
-                    .iter()
-                    .filter(|ws| match section_type {
-                        SectionType::AgentSessions => ws.agent_session.is_some(),
-                        SectionType::Issues => ws.agent_session.is_none(),
-                    })
-                    .filter(|ws| {
-                        app.state
-                            .workstreams
-                            .iter()
-                            .position(|w| w.linear_issue.id == ws.linear_issue.id)
-                            .map(|idx| app.filtered_indices.contains(&idx))
-                            .unwrap_or(false)
-                    })
-                    .count();
+                // Use cached section counts (O(1) lookup instead of O(n²) calculation)
+                let count = app.section_counts.get(section_type).copied().unwrap_or(0);
 
                 let (icon, style) = match section_type {
                     SectionType::AgentSessions => {

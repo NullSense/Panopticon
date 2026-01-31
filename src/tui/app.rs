@@ -106,6 +106,8 @@ pub struct App {
     pub filtered_indices: Vec<usize>,
     pub visual_items: Vec<VisualItem>,
     pub visual_selected: usize,
+    /// Cached section counts (agent sessions, issues) - computed once per rebuild
+    pub section_counts: HashMap<SectionType, usize>,
 
     // Modal state - single enum replacing 7 booleans
     pub modal: ModalState,
@@ -222,6 +224,7 @@ impl App {
             filtered_indices: vec![],
             visual_items: vec![],
             visual_selected: 0,
+            section_counts: HashMap::new(),
             modal: ModalState::None,
             show_preview: config.ui.show_preview,
             error_message: None,
@@ -518,6 +521,19 @@ impl App {
         self.visual_items = self
             .state
             .build_visual_items(&self.filtered_indices, preserve_order);
+
+        // Cache section counts (O(n) instead of O(n²) per render frame)
+        self.section_counts.clear();
+        for &idx in &self.filtered_indices {
+            if let Some(ws) = self.state.workstreams.get(idx) {
+                let section = if ws.agent_session.is_some() {
+                    SectionType::AgentSessions
+                } else {
+                    SectionType::Issues
+                };
+                *self.section_counts.entry(section).or_insert(0) += 1;
+            }
+        }
 
         // Ensure selection is valid
         if self.visual_items.is_empty() {
