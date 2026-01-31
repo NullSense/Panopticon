@@ -165,6 +165,8 @@ pub struct App {
     refresh_started_at: Option<Instant>,
     /// File watcher for real-time Claude session updates
     claude_watcher: Option<ClaudeWatcher>,
+    /// Cached current time for render frame (avoids repeated syscalls)
+    pub frame_now: chrono::DateTime<chrono::Utc>,
 }
 
 // Modal state accessors (backward-compatible interface)
@@ -261,6 +263,7 @@ impl App {
             shadow_metadata: None,
             refresh_started_at: None,
             claude_watcher: ClaudeWatcher::new().ok(),
+            frame_now: chrono::Utc::now(),
         };
 
         app.load_cached_state();
@@ -1431,6 +1434,11 @@ impl App {
         self.sub_issues_visible_height = height.clamp(3, 10);
     }
 
+    /// Set cached frame time (call once per render frame to avoid repeated syscalls)
+    pub fn set_frame_time(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        self.frame_now = now;
+    }
+
     /// Navigate to next item in link menu (parent → children cycle)
     /// Uses sorted/filtered children count to match what's displayed in UI
     pub fn next_child_issue(&mut self) {
@@ -1843,6 +1851,13 @@ impl App {
 
     /// Apply filters to create filtered_indices
     pub fn apply_filters(&mut self) {
+        // Pre-build project name → ID lookup map (O(1) instead of O(n) per workstream)
+        let project_name_to_id: HashMap<&str, &str> = self
+            .available_projects
+            .iter()
+            .map(|p| (p.name.as_str(), p.id.as_str()))
+            .collect();
+
         self.filtered_indices = self
             .state
             .workstreams
@@ -1887,18 +1902,12 @@ impl App {
                     return false;
                 }
 
-                // Project filter (empty = show all)
+                // Project filter (empty = show all) - O(1) lookup via pre-built map
                 if !self.filter_projects.is_empty() {
                     match &ws.linear_issue.project {
                         Some(project_name) => {
-                            // Find project ID by name
-                            let project_id = self
-                                .available_projects
-                                .iter()
-                                .find(|p| &p.name == project_name)
-                                .map(|p| &p.id);
-                            match project_id {
-                                Some(id) if self.filter_projects.contains(id) => {}
+                            match project_name_to_id.get(project_name.as_str()) {
+                                Some(id) if self.filter_projects.contains(*id) => {}
                                 _ => return false,
                             }
                         }

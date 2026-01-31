@@ -1,11 +1,28 @@
 //! Layout calculations and text utilities for the TUI.
 
+use once_cell::sync::Lazy;
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Pre-computed padding strings to avoid repeated " ".repeat(n) allocations.
+/// Covers padding widths 0-100 (column widths are typically < 60).
+static PADDING: Lazy<Vec<String>> = Lazy::new(|| (0..=100).map(|n| " ".repeat(n)).collect());
+
+/// Get a padding string of the given width (reuses pre-computed strings).
+#[inline]
+fn get_padding(width: usize) -> &'static str {
+    if width <= 100 {
+        &PADDING[width]
+    } else {
+        // Fallback for rare cases > 100 (should never happen in practice)
+        // This is still slower but avoids panics
+        Box::leak(Box::new(" ".repeat(width)))
+    }
+}
 
 use crate::tui::app::{
     COL_IDX_AGENT, COL_IDX_ID, COL_IDX_PR, COL_IDX_PRIORITY, COL_IDX_STATUS, COL_IDX_TIME,
@@ -201,20 +218,21 @@ pub fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 }
 
 /// Pad text to a specific width with given alignment.
+/// Uses pre-computed padding strings to avoid allocations.
 pub fn pad_to_width(text: &str, width: usize, alignment: Alignment) -> String {
     let mut trimmed = truncate_to_width(text, width);
     let current = display_width(&trimmed);
     let pad = width.saturating_sub(current);
     match alignment {
         Alignment::Left => {
-            trimmed.push_str(&" ".repeat(pad));
+            trimmed.push_str(get_padding(pad));
             trimmed
         }
-        Alignment::Right => format!("{}{}", " ".repeat(pad), trimmed),
+        Alignment::Right => format!("{}{}", get_padding(pad), trimmed),
         Alignment::Center => {
             let left = pad / 2;
             let right = pad.saturating_sub(left);
-            format!("{}{}{}", " ".repeat(left), trimmed, " ".repeat(right))
+            format!("{}{}{}", get_padding(left), trimmed, get_padding(right))
         }
     }
 }

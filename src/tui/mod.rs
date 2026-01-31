@@ -67,6 +67,8 @@ async fn run_app(
     }
 
     loop {
+        // Cache current time once per frame to avoid repeated syscalls during render
+        app.set_frame_time(chrono::Utc::now());
         terminal.draw(|f| ui::draw(f, app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());

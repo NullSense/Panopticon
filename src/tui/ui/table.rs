@@ -251,7 +251,7 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         None
                     };
-                    let row = build_workstream_row(ws, is_selected, &layout, search_query);
+                    let row = build_workstream_row(ws, is_selected, &layout, search_query, app.frame_now);
                     items.push(row);
 
                     if let Some(search_match) = app.search_excerpts.get(ws_idx) {
@@ -333,8 +333,9 @@ fn build_workstream_row(
     selected: bool,
     layout: &ColumnLayout,
     search_query: Option<&str>,
+    frame_now: chrono::DateTime<chrono::Utc>,
 ) -> ListItem<'static> {
-    WorkstreamRowBuilder::new(ws, layout, search_query).build(selected)
+    WorkstreamRowBuilder::new(ws, layout, search_query, frame_now).build(selected)
 }
 
 /// Builder for workstream row UI elements.
@@ -343,6 +344,8 @@ struct WorkstreamRowBuilder<'a> {
     layout: &'a ColumnLayout,
     search_query: Option<&'a str>,
     sep_style: Style,
+    /// Cached current time (set once per render frame)
+    frame_now: chrono::DateTime<chrono::Utc>,
 }
 
 impl<'a> WorkstreamRowBuilder<'a> {
@@ -350,12 +353,14 @@ impl<'a> WorkstreamRowBuilder<'a> {
         ws: &'a crate::data::Workstream,
         layout: &'a ColumnLayout,
         search_query: Option<&'a str>,
+        frame_now: chrono::DateTime<chrono::Utc>,
     ) -> Self {
         Self {
             ws,
             layout,
             search_query,
             sep_style: Style::default().fg(Color::DarkGray),
+            frame_now,
         }
     }
 
@@ -571,7 +576,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
                 } else {
                     // No tool - check if we've been idle for a while (3+ seconds)
                     let seconds_since_activity =
-                        chrono::Utc::now().signed_duration_since(session.last_activity);
+                        self.frame_now.signed_duration_since(session.last_activity);
                     if seconds_since_activity.num_seconds() > 3 {
                         // Been a while with no tool = effectively idle
                         format!(
@@ -626,7 +631,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
             );
         }
         let elapsed = if let Some(session) = &self.ws.agent_session {
-            let duration = chrono::Utc::now().signed_duration_since(session.started_at);
+            let duration = self.frame_now.signed_duration_since(session.started_at);
             if session.status == AgentStatus::Done {
                 "done".to_string()
             } else {
@@ -709,7 +714,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
             if activity.current_tool.is_some() {
                 ("Running", Color::Cyan)
             } else {
-                let seconds_since = chrono::Utc::now().signed_duration_since(session.last_activity);
+                let seconds_since = self.frame_now.signed_duration_since(session.last_activity);
                 if seconds_since.num_seconds() > 3 {
                     ("Idle", Color::DarkGray)
                 } else {
