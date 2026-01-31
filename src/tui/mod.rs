@@ -106,8 +106,8 @@ async fn run_app(
             // Poll for background refresh results (non-blocking)
             app.poll_refresh();
 
-            // Poll file watcher for real-time Claude session updates
-            app.poll_claude_watcher();
+            // Poll unified watcher for real-time agent session updates
+            app.poll_unified_watcher();
 
             last_tick = std::time::Instant::now();
         }

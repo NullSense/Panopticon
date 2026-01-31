@@ -1,9 +1,9 @@
 //! Agent session caching for efficient lookups during refresh
 //!
-//! The `AgentSessionCache` pre-loads all Claude and Moltbot sessions once per refresh
+//! The `AgentSessionCache` pre-loads all Claude and OpenClaw sessions once per refresh
 //! cycle and provides O(1) lookup by git branch. This dramatically reduces I/O:
-//! - Before: 100 issues = 100 file reads + 100 HTTP calls
-//! - After: 100 issues = 1 file read + 1 HTTP call
+//! - Before: 100 issues = 100 file reads per issue
+//! - After: 100 issues = 1 file read for Claude + 1 directory scan for OpenClaw
 
 use crate::data::AgentSession;
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 ///
 /// This cache is created once at the start of each refresh and provides O(1)
 /// lookup of sessions by git branch or issue identifier. Claude sessions take
-/// precedence over Moltbot sessions when both exist for the same branch.
+/// precedence over OpenClaw sessions when both exist for the same branch.
 #[derive(Debug, Default)]
 pub struct AgentSessionCache {
     /// Map from git_branch -> AgentSession
@@ -43,12 +43,12 @@ fn extract_issue_id(branch: &str) -> Option<String> {
 impl AgentSessionCache {
     /// Create a new cache from pre-fetched session lists.
     ///
-    /// Claude sessions are inserted first, then Moltbot sessions are added
+    /// Claude sessions are inserted first, then OpenClaw sessions are added
     /// only if there's no existing entry for that branch. This ensures
     /// Claude takes precedence.
     pub fn from_sessions(
         claude_sessions: Vec<AgentSession>,
-        moltbot_sessions: Vec<AgentSession>,
+        openclaw_sessions: Vec<AgentSession>,
     ) -> Self {
         let mut by_branch = HashMap::new();
         let mut by_identifier = HashMap::new();
@@ -66,8 +66,8 @@ impl AgentSessionCache {
             }
         }
 
-        // Insert Moltbot sessions only if branch not already mapped
-        for session in moltbot_sessions {
+        // Insert OpenClaw sessions only if branch not already mapped
+        for session in openclaw_sessions {
             all_sessions.push(session.clone());
             if let Some(branch) = &session.git_branch {
                 by_branch.entry(branch.clone()).or_insert(session.clone());
@@ -85,11 +85,11 @@ impl AgentSessionCache {
         }
     }
 
-    /// Load all sessions from Claude and Moltbot sources.
+    /// Load all sessions from Claude and OpenClaw sources.
     ///
     /// This performs exactly:
-    /// - 1 file read for Claude sessions (claude_state.json)
-    /// - 1 HTTP call for Moltbot sessions (Gateway API)
+    /// - 1 file read for Claude sessions (~/.local/share/panopticon/claude_state.json)
+    /// - 1 directory scan for OpenClaw sessions (~/.openclaw/agents/*/sessions/)
     ///
     /// Errors in either source are logged and treated as empty lists.
     pub async fn load() -> Self {
@@ -102,16 +102,16 @@ impl AgentSessionCache {
             }
         };
 
-        // Load Moltbot sessions (single HTTP call)
-        let moltbot_sessions = match super::moltbot::find_all_sessions().await {
+        // Load OpenClaw sessions (single HTTP call)
+        let openclaw_sessions = match super::openclaw::find_all_sessions().await {
             Ok(sessions) => sessions,
             Err(e) => {
-                tracing::debug!("Failed to load Moltbot sessions: {}", e);
+                tracing::debug!("Failed to load OpenClaw sessions: {}", e);
                 vec![]
             }
         };
 
-        Self::from_sessions(claude_sessions, moltbot_sessions)
+        Self::from_sessions(claude_sessions, openclaw_sessions)
     }
 
     /// Find an agent session for a git branch.
@@ -221,14 +221,14 @@ mod tests {
             Some("main"),
             AgentType::ClaudeCode,
         )];
-        let moltbot = vec![make_session(
-            "moltbot-1",
+        let openclaw = vec![make_session(
+            "openclaw-1",
             "/project",
             Some("main"),
-            AgentType::Clawdbot,
+            AgentType::OpenClaw,
         )];
 
-        let cache = AgentSessionCache::from_sessions(claude, moltbot);
+        let cache = AgentSessionCache::from_sessions(claude, openclaw);
 
         let found = cache.find_for_branch(Some("main")).unwrap();
         assert_eq!(found.id, "claude-1");

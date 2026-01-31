@@ -2,6 +2,7 @@
 //!
 //! This library crate exposes internal modules for integration testing.
 
+pub mod agents;
 pub mod config;
 pub mod data;
 pub mod integrations;

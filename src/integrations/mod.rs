@@ -3,7 +3,7 @@ pub mod cache;
 pub mod claude;
 pub mod github;
 pub mod linear;
-pub mod moltbot;
+pub mod openclaw;
 pub mod vercel;
 
 use crate::config::Config;

@@ -5,7 +5,7 @@ use crate::data::{
 };
 use crate::integrations;
 use crate::integrations::cache;
-use crate::integrations::claude::watcher::ClaudeWatcher;
+use crate::agents::UnifiedAgentWatcher;
 use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
@@ -163,8 +163,8 @@ pub struct App {
     shadow_metadata: Option<RefreshMetadata>,
     /// Timestamp when refresh started (for timeout detection)
     refresh_started_at: Option<Instant>,
-    /// File watcher for real-time Claude session updates
-    claude_watcher: Option<ClaudeWatcher>,
+    /// Unified file watcher for real-time agent session updates (Claude + OpenClaw)
+    unified_watcher: Option<UnifiedAgentWatcher>,
     /// Cached current time for render frame (avoids repeated syscalls)
     pub frame_now: chrono::DateTime<chrono::Utc>,
 }
@@ -262,7 +262,7 @@ impl App {
             shadow_workstreams: Vec::new(),
             shadow_metadata: None,
             refresh_started_at: None,
-            claude_watcher: ClaudeWatcher::new().ok(),
+            unified_watcher: UnifiedAgentWatcher::new().ok(),
             frame_now: chrono::Utc::now(),
         };
 
@@ -768,7 +768,7 @@ impl App {
                     }
 
                     // Throttled UI rebuild: only every 10 items to avoid performance hit
-                    if self.shadow_workstreams.len() % 10 == 0 {
+                    if self.shadow_workstreams.len().is_multiple_of(10) {
                         self.apply_filters();
                         self.rebuild_visual_items();
                     }
@@ -997,12 +997,12 @@ impl App {
         }
     }
 
-    /// Poll file watcher for Claude session changes (real-time updates)
+    /// Poll unified watcher for agent session changes (real-time updates)
     ///
-    /// This is much more efficient than polling - it only updates when the
-    /// file actually changes, using OS-level file system notifications (inotify on Linux).
-    pub fn poll_claude_watcher(&mut self) -> bool {
-        let Some(watcher) = &self.claude_watcher else {
+    /// Monitors both Claude Code and OpenClaw sessions using OS-level
+    /// file system notifications (inotify on Linux).
+    pub fn poll_unified_watcher(&mut self) -> bool {
+        let Some(watcher) = &self.unified_watcher else {
             return false;
         };
 

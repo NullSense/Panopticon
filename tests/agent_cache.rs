@@ -1,6 +1,6 @@
 //! Tests for agent session caching
 //!
-//! The agent cache pre-loads all Claude and Moltbot sessions once per refresh cycle
+//! The agent cache pre-loads all Claude and OpenClaw sessions once per refresh cycle
 //! and provides O(1) lookup by working directory.
 
 use panopticon::data::{AgentSession, AgentStatus, AgentType};
@@ -25,10 +25,10 @@ mod helpers {
         }
     }
 
-    pub fn make_moltbot_session(id: &str, dir: &str) -> AgentSession {
+    pub fn make_openclaw_session(id: &str, dir: &str) -> AgentSession {
         AgentSession {
             id: id.to_string(),
-            agent_type: AgentType::Clawdbot,
+            agent_type: AgentType::OpenClaw,
             status: AgentStatus::Idle,
             working_directory: Some(dir.to_string()),
             git_branch: None,
@@ -66,35 +66,35 @@ fn test_cache_find_claude_session() {
 }
 
 #[test]
-fn test_cache_find_moltbot_session() {
-    let moltbot_sessions = vec![helpers::make_moltbot_session(
-        "moltbot-1",
+fn test_cache_find_openclaw_session() {
+    let openclaw_sessions = vec![helpers::make_openclaw_session(
+        "openclaw-1",
         "/home/user/project-c",
     )];
 
-    let cache = AgentSessionCache::from_sessions(vec![], moltbot_sessions);
+    let cache = AgentSessionCache::from_sessions(vec![], openclaw_sessions);
 
     let found = cache.find_for_directory(Some("/home/user/project-c"));
     assert!(found.is_some());
     let session = found.unwrap();
-    assert_eq!(session.id, "moltbot-1");
-    assert!(matches!(session.agent_type, AgentType::Clawdbot));
+    assert_eq!(session.id, "openclaw-1");
+    assert!(matches!(session.agent_type, AgentType::OpenClaw));
 }
 
 #[test]
-fn test_cache_claude_takes_precedence_over_moltbot() {
-    // When both Claude and Moltbot have sessions for same directory,
+fn test_cache_claude_takes_precedence_over_openclaw() {
+    // When both Claude and OpenClaw have sessions for same directory,
     // Claude should take precedence
     let claude_sessions = vec![helpers::make_claude_session(
         "claude-1",
         "/home/user/shared-project",
     )];
-    let moltbot_sessions = vec![helpers::make_moltbot_session(
-        "moltbot-1",
+    let openclaw_sessions = vec![helpers::make_openclaw_session(
+        "openclaw-1",
         "/home/user/shared-project",
     )];
 
-    let cache = AgentSessionCache::from_sessions(claude_sessions, moltbot_sessions);
+    let cache = AgentSessionCache::from_sessions(claude_sessions, openclaw_sessions);
 
     let found = cache.find_for_directory(Some("/home/user/shared-project"));
     assert!(found.is_some());
