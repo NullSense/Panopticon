@@ -63,10 +63,6 @@ pub async fn fetch_pr(config: &Config, owner: &str, repo: &str, number: u64) -> 
     cached.into_result()
 }
 
-fn normalize_github_pr_url(pr_url: &str) -> String {
-    pr_url.trim().trim_end_matches('/').to_string()
-}
-
 struct FetchError {
     msg: String,
     backoff: Duration,

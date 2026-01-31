@@ -6,6 +6,7 @@ pub mod github;
 pub mod linear;
 pub mod openclaw;
 pub mod vercel;
+pub mod enrichment_cache;
 
 use crate::config::Config;
 use crate::data::{AgentSession, LinearIssue, LinearPriority, LinearStatus, Workstream};
