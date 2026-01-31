@@ -956,7 +956,7 @@ impl App {
             if interval.as_secs() > 0 {
                 let should_refresh = match self.state.last_refresh {
                     Some(last) => {
-                        let elapsed = Utc::now().signed_duration_since(last);
+                        let elapsed = self.frame_now.signed_duration_since(last);
                         elapsed.num_seconds() >= interval.as_secs() as i64
                     }
                     None => true,

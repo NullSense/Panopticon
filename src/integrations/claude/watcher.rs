@@ -1,10 +1,7 @@
 //! File watcher for Claude state changes
 //!
-//! Uses the notify crate to watch claude_state.json for changes
-//!
-//! Note: Currently unused but kept for future real-time updates feature.
-
-#![allow(dead_code)]
+//! Uses the notify crate to watch claude_state.json for changes.
+//! Provides real-time updates when Claude sessions start/stop.
 
 use super::state::{read_state, sessions_from_state, state_file_path};
 use crate::data::AgentSession;
@@ -59,20 +56,17 @@ impl ClaudeWatcher {
     }
 
     /// Poll for changes and update sessions
+    ///
+    /// Debounces multiple events - only reads state once even if file changed multiple times.
     pub fn poll(&self) -> bool {
-        let mut changed = false;
+        let mut has_events = false;
 
-        // Check for file change events
+        // Drain all pending events (debounce - only care that SOMETHING changed)
         loop {
             match self.receiver.try_recv() {
                 Ok(Ok(_event)) => {
-                    // Reload state on any change
-                    if let Ok(state) = read_state() {
-                        if let Ok(mut guard) = self.sessions.write() {
-                            *guard = sessions_from_state(&state);
-                            changed = true;
-                        }
-                    }
+                    has_events = true;
+                    // Don't read here - just mark that we have events
                 }
                 Ok(Err(_)) => {
                     // Watcher error, ignore
@@ -82,10 +76,21 @@ impl ClaudeWatcher {
             }
         }
 
-        changed
+        // Only read state ONCE after draining all events
+        if has_events {
+            if let Ok(state) = read_state() {
+                if let Ok(mut guard) = self.sessions.write() {
+                    *guard = sessions_from_state(&state);
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Get current sessions (returns Arc to avoid cloning entire Vec)
+    #[allow(dead_code)]
     pub fn get_sessions(&self) -> Arc<RwLock<Vec<AgentSession>>> {
         Arc::clone(&self.sessions)
     }
@@ -97,6 +102,7 @@ impl ClaudeWatcher {
 }
 
 /// Start background thread that watches for changes
+#[allow(dead_code)]
 pub fn spawn_watcher_thread() -> Arc<RwLock<Vec<AgentSession>>> {
     let sessions = Arc::new(RwLock::new(Vec::new()));
     let sessions_clone = sessions.clone();
