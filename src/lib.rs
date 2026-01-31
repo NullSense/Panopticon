@@ -6,3 +6,4 @@ pub mod config;
 pub mod data;
 pub mod integrations;
 pub mod tui;
+pub mod util;

@@ -120,9 +120,7 @@ pub async fn fetch_workstreams_incremental(
         current_user_id: current_user_res.ok(),
     };
 
-    if let Err(e) = tx.send(RefreshResult::Metadata(metadata)).await {
-        tracing::debug!("Failed to send metadata update: {}", e);
-    }
+    crate::util::send_or_log(&tx, RefreshResult::Metadata(metadata), "metadata update").await;
 
     // Step 1: Fetch all Linear issues first
     if let Err(e) = tx
@@ -241,9 +239,7 @@ pub async fn fetch_workstreams_incremental(
                     stale: false,
                 };
 
-                if let Err(e) = tx.send(RefreshResult::Workstream(Box::new(ws))).await {
-                    tracing::debug!("Workstream channel closed: {}", e);
-                }
+                crate::util::send_or_log(&tx, RefreshResult::Workstream(Box::new(ws)), "workstream").await;
             }
         })
         .buffer_unordered(5) // Process 5 issues concurrently
@@ -261,15 +257,11 @@ pub async fn fetch_workstreams_incremental(
                 agent_session: Some(session.clone()),
                 stale: false,
             };
-            if let Err(e) = tx.send(RefreshResult::Workstream(Box::new(ws))).await {
-                tracing::debug!("Unlinked session channel closed: {}", e);
-            }
+            crate::util::send_or_log(&tx, RefreshResult::Workstream(Box::new(ws)), "unlinked session").await;
         }
     }
 
-    if let Err(e) = tx.send(RefreshResult::Complete).await {
-        tracing::debug!("Complete channel closed: {}", e);
-    }
+    crate::util::send_or_log(&tx, RefreshResult::Complete, "complete signal").await;
     Ok(())
 }
 
