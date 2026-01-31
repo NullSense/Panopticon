@@ -1,6 +1,7 @@
 pub mod agent_cache;
 pub mod cache;
 pub mod claude;
+pub mod enrichment_cache;
 pub mod github;
 pub mod linear;
 pub mod openclaw;
