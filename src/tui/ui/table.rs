@@ -293,6 +293,48 @@ fn header_label(icon: &str, label: &str) -> String {
     }
 }
 
+/// Parse OpenClaw surface label into detailed display info
+///
+/// Returns (surface_type, detail) tuple:
+/// - ("TUI", None) for openclaw-tui
+/// - ("Discord DM", Some("@username")) for DMs
+/// - ("Discord", Some("#channel-name in Guild")) for guild channels
+fn parse_surface_detail(surface: Option<&str>, label: Option<&str>) -> Option<(String, Option<String>)> {
+    let label = label?;
+
+    // TUI session
+    if label == "openclaw-tui" {
+        return Some(("TUI".to_string(), None));
+    }
+
+    // Discord DM: "username user id:1234567890"
+    if label.contains(" user id:") {
+        if let Some(username) = label.split(" user id:").next() {
+            return Some(("Discord DM".to_string(), Some(format!("@{}", username))));
+        }
+    }
+
+    // Discord guild channel: "Guild #channel-name channel id:1234567890"
+    if let Some(rest) = label.strip_prefix("Guild #") {
+        if let Some(channel_end) = rest.find(" channel id:") {
+            let channel_name = &rest[..channel_end];
+            return Some(("Discord".to_string(), Some(format!("#{}", channel_name))));
+        }
+    }
+
+    // Raw discord channel ID: "discord:channel:1234567890"
+    if let Some(channel_id) = label.strip_prefix("discord:channel:") {
+        return Some(("Discord".to_string(), Some(format!("channel {}", channel_id))));
+    }
+
+    // Fallback: use surface type if available
+    if let Some(s) = surface {
+        return Some((s.to_string(), Some(label.to_string())));
+    }
+
+    None
+}
+
 /// Shorten a file path for display
 /// Replaces home directory with ~ and truncates if needed
 fn shorten_path(path: &str) -> String {
@@ -757,6 +799,45 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
         lines.push(Line::from(header_spans));
 
+        // ─── Line 1b: Surface info (OpenClaw only) ───
+        if session.agent_type == crate::data::AgentType::OpenClaw {
+            if let Some((surface_type, detail)) = parse_surface_detail(
+                activity.surface.as_deref(),
+                activity.surface_label.as_deref(),
+            ) {
+                let mut surface_spans = vec![
+                    Span::raw(indent_str.clone()),
+                    Span::styled("│  ", border_style),
+                    Span::styled("Via: ", label_style),
+                    Span::styled(
+                        surface_type,
+                        Style::default().fg(if activity.surface.as_deref() == Some("discord") {
+                            Color::Rgb(88, 101, 242) // Discord blurple
+                        } else {
+                            Color::Green // TUI
+                        }),
+                    ),
+                ];
+
+                if let Some(detail_text) = detail {
+                    surface_spans.push(Span::styled(" → ", border_style));
+                    surface_spans.push(Span::styled(detail_text, value_style));
+                }
+
+                // Add profile if available
+                if let Some(profile) = &activity.profile {
+                    surface_spans.push(Span::styled(" │ ", border_style));
+                    surface_spans.push(Span::styled("Profile: ", label_style));
+                    surface_spans.push(Span::styled(
+                        profile.clone(),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
+
+                lines.push(Line::from(surface_spans));
+            }
+        }
+
         // ─── Line 2: Current tool + target ───
         let mut tool_spans = vec![
             Span::raw(indent_str.clone()),
@@ -965,5 +1046,61 @@ pub fn highlight_search_matches(
             }
         }
         _ => vec![Span::styled(text.to_string(), base_style)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_surface_detail_tui() {
+        let result = parse_surface_detail(Some("webchat"), Some("openclaw-tui"));
+        assert_eq!(result, Some(("TUI".to_string(), None)));
+    }
+
+    #[test]
+    fn test_parse_surface_detail_discord_dm() {
+        let result = parse_surface_detail(Some("discord"), Some("johndoe user id:1234567890"));
+        assert_eq!(
+            result,
+            Some(("Discord DM".to_string(), Some("@johndoe".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_surface_detail_discord_guild_channel() {
+        let result = parse_surface_detail(
+            Some("discord"),
+            Some("Guild #general channel id:1234567890"),
+        );
+        assert_eq!(
+            result,
+            Some(("Discord".to_string(), Some("#general".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_surface_detail_discord_raw_channel() {
+        let result = parse_surface_detail(Some("discord"), Some("discord:channel:1234567890"));
+        assert_eq!(
+            result,
+            Some(("Discord".to_string(), Some("channel 1234567890".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_surface_detail_unknown_surface() {
+        let result = parse_surface_detail(Some("slack"), Some("some-label"));
+        assert_eq!(
+            result,
+            Some(("slack".to_string(), Some("some-label".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_parse_surface_detail_none_label() {
+        let result = parse_surface_detail(Some("discord"), None);
+        assert_eq!(result, None);
     }
 }
