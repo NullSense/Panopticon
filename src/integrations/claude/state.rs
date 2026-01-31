@@ -297,14 +297,19 @@ fn update_stats_for_tool(stats: &mut ActivityStats, tool_name: &str) {
     }
 }
 
-/// Truncate a prompt for storage
+/// Truncate a prompt for storage (in characters)
+///
+/// Safe for UTF-8: counts characters, not bytes
 fn truncate_prompt(prompt: &str, max_len: usize) -> String {
     let first_line = prompt.lines().next().unwrap_or(prompt);
-    if first_line.len() <= max_len {
-        first_line.to_string()
-    } else {
-        format!("{}...", &first_line[..max_len.saturating_sub(3)])
+    let char_count = first_line.chars().count();
+    if char_count <= max_len {
+        return first_line.to_string();
     }
+
+    let prefix_chars = max_len.saturating_sub(3);
+    let prefix: String = first_line.chars().take(prefix_chars).collect();
+    format!("{}...", prefix)
 }
 
 /// Convert state to AgentSessions

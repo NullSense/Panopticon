@@ -873,9 +873,12 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
         // ─── Footer line ───
         if !lines.is_empty() {
+            // Generate footer border to fit layout width
+            let footer_width = self.layout.row_body_width.saturating_sub(indent);
+            let footer_border: String = "─".repeat(footer_width.min(60));
             let footer_spans = vec![
                 Span::raw(indent_str),
-                Span::styled("└──────────────────────────────────────────────────", border_style),
+                Span::styled(format!("└{}", footer_border), border_style),
             ];
             lines.push(Line::from(footer_spans));
         }

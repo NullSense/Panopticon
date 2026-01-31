@@ -70,22 +70,35 @@ pub struct HookInput {
 impl HookInput {
     /// Read and parse hook input from stdin
     ///
-    /// Returns None if stdin is empty or not valid JSON.
-    /// This is non-blocking - if no input is available, returns None quickly.
+    /// Returns None if:
+    /// - stdin is a TTY (interactive terminal, no piped input)
+    /// - stdin is empty or not valid JSON
+    /// - read fails or exceeds size limit
+    ///
+    /// Uses a size cap to prevent memory exhaustion on malformed input.
     pub fn from_stdin() -> Option<Self> {
         use std::io::Read;
 
-        let stdin = std::io::stdin();
-        let mut handle = stdin.lock();
-
-        // Read all available input
-        let mut buffer = String::new();
-        if handle.read_to_string(&mut buffer).ok()? == 0 {
+        // Bail early if stdin is a TTY (no piped input)
+        // This prevents blocking when hook is run manually
+        if atty::is(atty::Stream::Stdin) {
             return None;
         }
 
+        let stdin = std::io::stdin();
+        let handle = stdin.lock();
+
+        // Read with size limit (1MB max) to prevent memory exhaustion
+        const MAX_SIZE: usize = 1024 * 1024;
+        let mut buffer = Vec::with_capacity(4096);
+        match handle.take(MAX_SIZE as u64).read_to_end(&mut buffer) {
+            Ok(0) => return None,
+            Err(_) => return None,
+            Ok(_) => {}
+        }
+
         // Parse JSON
-        serde_json::from_str(&buffer).ok()
+        serde_json::from_slice(&buffer).ok()
     }
 
     /// Extract human-readable target from tool_input
@@ -156,13 +169,18 @@ fn shorten_path(path: &str) -> String {
     }
 }
 
-/// Truncate a string to max length, adding "..." if truncated
+/// Truncate a string to max length (in characters), adding "..." if truncated
+///
+/// Safe for UTF-8: counts characters, not bytes
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+    let char_count = s.chars().count();
+    if char_count <= max_len {
+        return s.to_string();
     }
+
+    let prefix_chars = max_len.saturating_sub(3);
+    let prefix: String = s.chars().take(prefix_chars).collect();
+    format!("{}...", prefix)
 }
 
 #[cfg(test)]
@@ -207,6 +225,20 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("this is a long string", 10), "this is...");
+    }
+
+    #[test]
+    fn test_truncate_utf8_safe() {
+        // Multi-byte UTF-8 characters should not cause panics
+        let emoji = "🎉🎊🎈🎁🎀🎃🎄🎆🎇✨";
+        let result = truncate(emoji, 5);
+        assert_eq!(result.chars().count(), 5); // "🎉🎊..." = 2 emoji + 3 dots
+        assert_eq!(result, "🎉🎊...");
+
+        // Japanese text
+        let japanese = "こんにちは世界";
+        let result = truncate(japanese, 5);
+        assert_eq!(result, "こん...");
     }
 
     #[test]

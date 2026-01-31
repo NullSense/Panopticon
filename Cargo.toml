@@ -43,6 +43,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# TTY detection (for stdin safety)
+atty = "0.2"
+
 # Fuzzy search
 nucleo = "0.5"
 

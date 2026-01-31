@@ -1019,38 +1019,75 @@ impl App {
     /// Update agent sessions in workstreams from watcher data
     ///
     /// This updates existing agent sessions with fresh data from the watcher.
+    /// Also adds new sessions and removes stale ones for true real-time updates.
     /// Always updates activity data (tool, target, stats) for real-time display.
-    /// Only rebuilds visual items when status changes (affects sorting/grouping).
+    /// Rebuilds visual items when sessions are added/removed or status changes.
     fn update_agent_sessions_from_watcher(&mut self, sessions: &[AgentSession]) {
-        // Build a map of git_branch -> session for O(1) lookup
+        // Build lookup maps for O(1) matching
+        let session_by_id: HashMap<&str, &AgentSession> = sessions
+            .iter()
+            .map(|s| (s.id.as_str(), s))
+            .collect();
         let session_by_branch: HashMap<&str, &AgentSession> = sessions
             .iter()
             .filter_map(|s| s.git_branch.as_deref().map(|b| (b, s)))
             .collect();
 
-        let mut status_changed = false;
+        let mut structure_changed = false;
+        let mut matched_session_ids: HashSet<String> = HashSet::new();
 
-        // Update agent sessions in existing workstreams
+        // Update existing workstream sessions
         for ws in &mut self.state.workstreams {
             if let Some(current_session) = &ws.agent_session {
-                // Try to find updated session by git_branch
-                if let Some(branch) = &current_session.git_branch {
-                    if let Some(updated) = session_by_branch.get(branch.as_str()) {
-                        // Track if status changed (affects sorting/grouping)
-                        if current_session.status != updated.status {
-                            status_changed = true;
-                        }
-                        // Always update session to get latest activity data
-                        // (tool, target, stats, last_activity, etc.)
-                        ws.agent_session = Some((*updated).clone());
+                // Try to find updated session by ID first, then by branch
+                let updated = session_by_id
+                    .get(current_session.id.as_str())
+                    .or_else(|| {
+                        current_session
+                            .git_branch
+                            .as_deref()
+                            .and_then(|b| session_by_branch.get(b))
+                    });
+
+                if let Some(updated) = updated {
+                    matched_session_ids.insert(updated.id.clone());
+                    if current_session.status != updated.status {
+                        structure_changed = true;
                     }
+                    ws.agent_session = Some((*updated).clone());
+                } else {
+                    // Session no longer exists - remove it
+                    ws.agent_session = None;
+                    structure_changed = true;
                 }
             }
         }
 
-        // Only rebuild visual items if status changed (affects section grouping)
-        // Activity-only changes don't need rebuild - they'll show on next render
-        if status_changed {
+        // Add new unlinked sessions that weren't matched
+        for session in sessions {
+            if !matched_session_ids.contains(&session.id) {
+                // Check if this session should link to an existing workstream by branch
+                // Match against the GitHub PR branch if present
+                let linked = session.git_branch.as_ref().and_then(|branch| {
+                    self.state
+                        .workstreams
+                        .iter_mut()
+                        .find(|ws| {
+                            ws.agent_session.is_none()
+                                && ws.github_pr.as_ref().map(|pr| pr.branch.as_str()) == Some(branch.as_str())
+                        })
+                });
+
+                if let Some(ws) = linked {
+                    ws.agent_session = Some(session.clone());
+                    structure_changed = true;
+                }
+                // Note: Truly unlinked sessions (no matching branch) are added during full refresh
+                // to avoid creating placeholder workstreams on every watcher poll
+            }
+        }
+
+        if structure_changed {
             self.rebuild_visual_items();
         }
     }
