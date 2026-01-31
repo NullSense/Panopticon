@@ -716,18 +716,20 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
     /// Render expanded agent detail panel (multiple lines shown when row is selected)
     ///
-    /// Returns 3-4 lines showing:
-    /// - Line 1: Model, mode, status
-    /// - Line 2: Current tool + full target path
-    /// - Line 3: Stats and subagents
-    /// - Line 4: Last prompt (if available)
-    /// - Line 5: Error (if any)
+    /// Layout mirrors the Issue Details modal for consistency:
+    /// - Line 1: Model + Status
+    /// - Line 2: Via + Profile (OpenClaw) or Dir + Branch (Claude)
+    /// - Line 3: Branch + Tool/Target (activity info)
+    /// - Line 4: Stats and subagents
+    /// - Line 5: Last prompt (if available)
+    /// - Line 6: Error (if any)
     fn agent_detail_lines(&self) -> Vec<Line<'static>> {
         let session = match self.ws.agent_session.as_ref() {
             Some(s) => s,
             None => return vec![],
         };
         let activity = &session.activity;
+        let is_openclaw = session.agent_type == crate::data::AgentType::OpenClaw;
 
         let indent = title_column_offset(self.layout);
         let indent_str = " ".repeat(indent);
@@ -737,41 +739,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
 
         let mut lines = Vec::new();
 
-        // ─── Line 1: Header with model, mode, status ───
-        let mut header_spans = vec![
-            Span::raw(indent_str.clone()),
-            Span::styled("├─ ", border_style),
-        ];
-
-        // Model
-        if let Some(model) = &activity.model_short {
-            header_spans.push(Span::styled("Model: ", label_style));
-            header_spans.push(Span::styled(
-                model.clone(),
-                Style::default().fg(Color::Magenta),
-            ));
-            header_spans.push(Span::styled(" │ ", border_style));
-        }
-
-        // Permission mode - colors match Claude Code's actual mode indicators
-        if let Some(mode) = &activity.permission_mode {
-            let (mode_icon, mode_label, color) = match mode.as_str() {
-                "plan" => (icons::MODE_PLAN, "plan", Color::Magenta),
-                "acceptEdits" => (icons::MODE_ACCEPT, "accept", Color::Green),
-                "bypassPermissions" => (icons::MODE_YOLO, "yolo", Color::Rgb(255, 140, 0)),
-                "default" => ("", "default", Color::Gray),
-                _ => ("", mode.as_str(), Color::Gray),
-            };
-            header_spans.push(Span::styled("Mode: ", label_style));
-            header_spans.push(Span::styled(
-                format!("{} {}", mode_icon, mode_label),
-                Style::default().fg(color),
-            ));
-            header_spans.push(Span::styled(" │ ", border_style));
-        }
-
-        // Status (must match agent_span logic)
-        header_spans.push(Span::styled("Status: ", label_style));
+        // Compute status info (used in multiple places)
         let (status_text, status_color) = if session.status == AgentStatus::Running {
             if activity.current_tool.is_some() {
                 ("Running", Color::Cyan)
@@ -792,92 +760,172 @@ impl<'a> WorkstreamRowBuilder<'a> {
                 AgentStatus::Running => ("Running", Color::Cyan),
             }
         };
+
+        // ─── Line 1: Model + Status (matches modal) ───
+        let mut header_spans = vec![
+            Span::raw(indent_str.clone()),
+            Span::styled("├─ ", border_style),
+        ];
+
+        if let Some(model) = &activity.model_short {
+            header_spans.push(Span::styled("Model: ", label_style));
+            header_spans.push(Span::styled(
+                model.clone(),
+                Style::default().fg(Color::Magenta),
+            ));
+            header_spans.push(Span::styled(" │ ", border_style));
+        }
+
+        header_spans.push(Span::styled("Status: ", label_style));
         header_spans.push(Span::styled(
             status_text.to_string(),
             Style::default().fg(status_color),
         ));
 
-        lines.push(Line::from(header_spans));
-
-        // ─── Line 1b: Surface info (OpenClaw only) ───
-        if session.agent_type == crate::data::AgentType::OpenClaw {
-            if let Some((surface_type, detail)) = parse_surface_detail(
-                activity.surface.as_deref(),
-                activity.surface_label.as_deref(),
-            ) {
-                let mut surface_spans = vec![
-                    Span::raw(indent_str.clone()),
-                    Span::styled("│  ", border_style),
-                    Span::styled("Via: ", label_style),
-                    Span::styled(
-                        surface_type,
-                        Style::default().fg(if activity.surface.as_deref() == Some("discord") {
-                            Color::Rgb(88, 101, 242) // Discord blurple
-                        } else {
-                            Color::Green // TUI
-                        }),
-                    ),
-                ];
-
-                if let Some(detail_text) = detail {
-                    surface_spans.push(Span::styled(" → ", border_style));
-                    surface_spans.push(Span::styled(detail_text, value_style));
-                }
-
-                // Add profile if available
-                if let Some(profile) = &activity.profile {
-                    surface_spans.push(Span::styled(" │ ", border_style));
-                    surface_spans.push(Span::styled("Profile: ", label_style));
-                    surface_spans.push(Span::styled(
-                        profile.clone(),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                }
-
-                lines.push(Line::from(surface_spans));
+        // Add mode for Claude Code (OpenClaw doesn't have this)
+        if !is_openclaw {
+            if let Some(mode) = &activity.permission_mode {
+                let (mode_icon, mode_label, color) = match mode.as_str() {
+                    "plan" => (icons::MODE_PLAN, "plan", Color::Magenta),
+                    "acceptEdits" => (icons::MODE_ACCEPT, "accept", Color::Green),
+                    "bypassPermissions" => (icons::MODE_YOLO, "yolo", Color::Rgb(255, 140, 0)),
+                    "default" => ("", "default", Color::Gray),
+                    _ => ("", mode.as_str(), Color::Gray),
+                };
+                header_spans.push(Span::styled(" │ ", border_style));
+                header_spans.push(Span::styled("Mode: ", label_style));
+                header_spans.push(Span::styled(
+                    format!("{} {}", mode_icon, mode_label),
+                    Style::default().fg(color),
+                ));
             }
         }
 
-        // ─── Line 2: Current tool + target ───
-        let mut tool_spans = vec![
+        lines.push(Line::from(header_spans));
+
+        // ─── Line 2: Via + Profile (OpenClaw) or Dir + Branch (Claude) ───
+        // This matches the modal's second agent line
+        let mut line2_spans = vec![
             Span::raw(indent_str.clone()),
             Span::styled("│  ", border_style),
         ];
 
-        if let Some(tool) = &activity.current_tool {
-            let (icon, _ascii) = tool_badge(tool);
-            tool_spans.push(Span::styled("Tool: ", label_style));
-            tool_spans.push(Span::styled(
-                format!("{} {}", icon, tool),
-                Style::default().fg(Color::Cyan),
+        if is_openclaw {
+            // OpenClaw: Show Via and Profile (more useful than directory)
+            if let Some((surface_type, detail)) = parse_surface_detail(
+                activity.surface.as_deref(),
+                activity.surface_label.as_deref(),
+            ) {
+                line2_spans.push(Span::styled("Via: ", label_style));
+                line2_spans.push(Span::styled(
+                    surface_type,
+                    Style::default().fg(if activity.surface.as_deref() == Some("discord") {
+                        Color::Rgb(88, 101, 242) // Discord blurple
+                    } else {
+                        Color::Green // TUI
+                    }),
+                ));
+
+                if let Some(detail_text) = detail {
+                    line2_spans.push(Span::styled(" → ", border_style));
+                    line2_spans.push(Span::styled(detail_text, value_style));
+                }
+
+                line2_spans.push(Span::styled(" │ ", border_style));
+            }
+
+            // Profile
+            let profile_text = activity
+                .profile
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            line2_spans.push(Span::styled("Profile: ", label_style));
+            line2_spans.push(Span::styled(
+                profile_text,
+                Style::default().fg(Color::Green),
             ));
-            if let Some(target) = &activity.current_target {
-                tool_spans.push(Span::styled(" → ", border_style));
-                tool_spans.push(Span::styled(
-                    truncate_with_ellipsis(target, 60),
-                    value_style,
-                ));
-            }
         } else {
-            // Show working directory when no tool
+            // Claude Code: Show Dir and Branch (matching modal)
             if let Some(dir) = &session.working_directory {
-                tool_spans.push(Span::styled("Dir: ", label_style));
-                tool_spans.push(Span::styled(
-                    shorten_path(dir),
-                    value_style,
-                ));
+                line2_spans.push(Span::styled("Dir: ", label_style));
+                line2_spans.push(Span::styled(shorten_path(dir), value_style));
             }
+
             if let Some(branch) = &session.git_branch {
-                tool_spans.push(Span::styled(" (", border_style));
-                tool_spans.push(Span::styled(
+                if session.working_directory.is_some() {
+                    line2_spans.push(Span::styled(" │ ", border_style));
+                }
+                line2_spans.push(Span::styled("Branch: ", label_style));
+                line2_spans.push(Span::styled(
                     truncate_with_ellipsis(branch, 30),
                     Style::default().fg(Color::Blue),
                 ));
-                tool_spans.push(Span::styled(")", border_style));
             }
         }
 
-        lines.push(Line::from(tool_spans));
+        lines.push(Line::from(line2_spans));
+
+        // ─── Line 3: Branch + Tool/Target (activity info) ───
+        // For OpenClaw: show branch here since we prioritized Via/Profile above
+        // For Claude: show current tool/target
+        let mut activity_spans = vec![
+            Span::raw(indent_str.clone()),
+            Span::styled("│  ", border_style),
+        ];
+
+        if is_openclaw {
+            // OpenClaw: Branch + current tool/target
+            if let Some(branch) = &session.git_branch {
+                activity_spans.push(Span::styled("Branch: ", label_style));
+                activity_spans.push(Span::styled(
+                    truncate_with_ellipsis(branch, 25),
+                    Style::default().fg(Color::Blue),
+                ));
+
+                if activity.current_tool.is_some() || activity.current_target.is_some() {
+                    activity_spans.push(Span::styled(" │ ", border_style));
+                }
+            }
+
+            if let Some(tool) = &activity.current_tool {
+                let (icon, _ascii) = tool_badge(tool);
+                activity_spans.push(Span::styled("Tool: ", label_style));
+                activity_spans.push(Span::styled(
+                    format!("{} {}", icon, tool),
+                    Style::default().fg(Color::Cyan),
+                ));
+                if let Some(target) = &activity.current_target {
+                    activity_spans.push(Span::styled(" → ", border_style));
+                    activity_spans.push(Span::styled(
+                        truncate_with_ellipsis(target, 40),
+                        value_style,
+                    ));
+                }
+            }
+
+            // Only add this line if there's content beyond the border prefix
+            if activity_spans.len() > 2 {
+                lines.push(Line::from(activity_spans));
+            }
+        } else {
+            // Claude Code: Current tool + target
+            if let Some(tool) = &activity.current_tool {
+                let (icon, _ascii) = tool_badge(tool);
+                activity_spans.push(Span::styled("Tool: ", label_style));
+                activity_spans.push(Span::styled(
+                    format!("{} {}", icon, tool),
+                    Style::default().fg(Color::Cyan),
+                ));
+                if let Some(target) = &activity.current_target {
+                    activity_spans.push(Span::styled(" → ", border_style));
+                    activity_spans.push(Span::styled(
+                        truncate_with_ellipsis(target, 60),
+                        value_style,
+                    ));
+                }
+                lines.push(Line::from(activity_spans));
+            }
+        }
 
         // ─── Line 3: Stats and subagents ───
         let stats = &activity.stats;
