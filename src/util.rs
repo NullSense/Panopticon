@@ -31,7 +31,7 @@ mod tests {
     async fn test_send_or_log_closed_channel() {
         let (tx, rx) = mpsc::channel::<i32>(1);
         drop(rx); // Close the receiver
-        // Should not panic, just log
+                  // Should not panic, just log
         send_or_log(&tx, 42, "test value").await;
     }
 }

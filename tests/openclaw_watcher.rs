@@ -98,12 +98,7 @@ mod session_discovery {
 mod transcript_integration {
     use super::*;
 
-    fn setup_session_with_transcript(
-        dir: &TempDir,
-        agent_id: &str,
-        session_id: &str,
-        cwd: &str,
-    ) {
+    fn setup_session_with_transcript(dir: &TempDir, agent_id: &str, session_id: &str, cwd: &str) {
         let agent_dir = dir.path().join(agent_id).join("sessions");
         fs::create_dir_all(&agent_dir).unwrap();
 

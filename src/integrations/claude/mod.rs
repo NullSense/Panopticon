@@ -136,10 +136,7 @@ fn build_activity_update(event: &str, input: &hook_input::HookInput) -> state::A
         model: input.model.clone(),
         permission_mode: input.permission_mode.clone(),
         error: input.error.clone(),
-        subagent: input
-            .agent_type
-            .clone()
-            .zip(input.agent_id.clone()),
+        subagent: input.agent_type.clone().zip(input.agent_id.clone()),
     }
 }
 
@@ -246,7 +243,10 @@ mod tests {
         let update = build_activity_update("subagent_start", &input);
 
         assert_eq!(update.event, "subagent_start");
-        assert_eq!(update.subagent, Some(("Explore".to_string(), "agent-123".to_string())));
+        assert_eq!(
+            update.subagent,
+            Some(("Explore".to_string(), "agent-123".to_string()))
+        );
     }
 
     #[test]
@@ -261,6 +261,9 @@ mod tests {
 
         assert_eq!(update.event, "tool_fail");
         assert_eq!(update.tool_name, Some("Bash".to_string()));
-        assert_eq!(update.error, Some("Command failed with exit code 1".to_string()));
+        assert_eq!(
+            update.error,
+            Some("Command failed with exit code 1".to_string())
+        );
     }
 }

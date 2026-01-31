@@ -47,16 +47,16 @@ mod session_merger {
     }
 
     #[test]
-    fn claude_takes_precedence_for_same_branch() {
+    fn keeps_both_for_same_branch() {
         let claude = vec![make_session("c1", Some("main"), AgentType::ClaudeCode)];
         let openclaw = vec![make_session("o1", Some("main"), AgentType::OpenClaw)];
 
         let merged = merge_sessions(claude, openclaw);
 
-        // Should only have Claude session, OpenClaw deduplicated
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].id, "c1");
-        assert!(matches!(merged[0].agent_type, AgentType::ClaudeCode));
+        // Both should be kept since IDs differ
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|s| s.id == "c1"));
+        assert!(merged.iter().any(|s| s.id == "o1"));
     }
 
     #[test]
@@ -87,18 +87,16 @@ mod session_merger {
             make_session("c2", Some("feat-a"), AgentType::ClaudeCode),
         ];
         let openclaw = vec![
-            make_session("o1", Some("main"), AgentType::OpenClaw),    // Dedup with c1
-            make_session("o2", Some("feat-b"), AgentType::OpenClaw), // Unique
+            make_session("o1", Some("main"), AgentType::OpenClaw),
+            make_session("o2", Some("feat-b"), AgentType::OpenClaw),
         ];
 
         let merged = merge_sessions(claude, openclaw);
 
-        // c1 (main), c2 (feat-a), o2 (feat-b) = 3 sessions
-        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.len(), 4);
         assert!(merged.iter().any(|s| s.id == "c1"));
         assert!(merged.iter().any(|s| s.id == "c2"));
+        assert!(merged.iter().any(|s| s.id == "o1"));
         assert!(merged.iter().any(|s| s.id == "o2"));
-        // o1 should be deduplicated
-        assert!(!merged.iter().any(|s| s.id == "o1"));
     }
 }

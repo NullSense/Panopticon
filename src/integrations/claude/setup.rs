@@ -288,8 +288,7 @@ fn all_hooks_present(settings: &Value) -> bool {
                         .get("command")
                         .and_then(|c| c.as_str())
                         .map(|s| {
-                            s.contains("panopticon")
-                                && s.contains(&format!("--event {}", event))
+                            s.contains("panopticon") && s.contains(&format!("--event {}", event))
                         })
                         .unwrap_or(false)
                 })

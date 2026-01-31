@@ -55,7 +55,11 @@ async fn main() -> Result<()> {
             .as_ref()
             .and_then(|i| i.cwd.clone())
             .or_else(|| std::env::var("PWD").ok())
-            .or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().to_string()).ok())
+            .or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .ok()
+            })
             .unwrap_or_default();
 
         // Quick write to state file and exit

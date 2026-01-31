@@ -175,9 +175,7 @@ fn load_agent_sessions(sessions_dir: &Path, profile: Option<&str>) -> Result<Vec
         let status = infer_status(updated_at, now);
 
         // Look up working directory from transcript
-        let working_directory = transcripts
-            .get(&entry.session_id)
-            .map(|h| h.cwd.clone());
+        let working_directory = transcripts.get(&entry.session_id).map(|h| h.cwd.clone());
 
         // Extract git branch from working directory
         let git_branch = working_directory
@@ -412,9 +410,6 @@ mod tests {
 
     #[test]
     fn test_format_surface_label_unknown() {
-        assert_eq!(
-            format_surface_label("something-else"),
-            "something-else"
-        );
+        assert_eq!(format_surface_label("something-else"), "something-else");
     }
 }

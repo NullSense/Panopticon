@@ -4,7 +4,7 @@ pub use sorting::sort_children;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// A workstream represents a Linear issue and all its linked resources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +12,10 @@ pub struct Workstream {
     pub linear_issue: LinearIssue,
     pub github_pr: Option<GitHubPR>,
     pub vercel_deployment: Option<VercelDeployment>,
+    /// All agent sessions linked to this workstream (can be multiple).
+    #[serde(default)]
+    pub agent_sessions: Vec<AgentSession>,
+    /// Primary agent session used for issue-level views.
     pub agent_session: Option<AgentSession>,
     /// Whether this workstream is from cache and hasn't been refreshed yet
     #[serde(skip)]
@@ -478,6 +482,8 @@ impl SectionType {
 pub enum VisualItem {
     /// Section header (non-selectable, but included for offset calculation)
     SectionHeader(SectionType),
+    /// Agent session row (selectable) - workstream index + session index
+    AgentSession { ws_idx: usize, session_idx: usize },
     /// Workstream row (selectable) - contains index into workstreams vec
     Workstream(usize),
 }
@@ -554,6 +560,7 @@ impl AppState {
                 let status = ws
                     .agent_session
                     .as_ref()
+                    .or_else(|| ws.agent_sessions.first())
                     .map(|s| agent_sort_order(s.status))
                     .unwrap_or(99);
                 (status, String::new(), 0i64, 0u8, 0u8)
@@ -674,21 +681,23 @@ impl AppState {
     /// Agent Sessions: Issues with an active agent, sorted by agent status → priority
     /// Issues: Issues without agents, sorted by priority → status
     pub fn grouped_by_section(&self) -> Vec<(SectionType, Vec<&Workstream>)> {
-        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) = self
-            .workstreams
-            .iter()
-            .partition(|ws: &&Workstream| ws.agent_session.is_some());
+        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) =
+            self.workstreams.iter().partition(|ws: &&Workstream| {
+                !ws.agent_sessions.is_empty() || ws.agent_session.is_some()
+            });
 
         // Agent Sessions: sort by agent status → priority
         agent_sessions.sort_by(|a, b| {
             let a_status = a
                 .agent_session
                 .as_ref()
+                .or_else(|| a.agent_sessions.first())
                 .map(|s| agent_sort_order(s.status))
                 .unwrap_or(99);
             let b_status = b
                 .agent_session
                 .as_ref()
+                .or_else(|| b.agent_sessions.first())
                 .map(|s| agent_sort_order(s.status))
                 .unwrap_or(99);
             a_status.cmp(&b_status).then_with(|| {
@@ -745,42 +754,108 @@ impl AppState {
         // Convert filtered_indices to HashSet for O(1) membership check
         let filtered_set: HashSet<usize> = filtered_indices.iter().copied().collect();
 
-        // Build id→index map for O(1) lookup
-        let index_map: HashMap<&str, usize> = self
+        let mut items = Vec::new();
+
+        // ── Agent Sessions section (one row per session) ──
+        let mut session_rows: Vec<(usize, usize)> = Vec::new();
+        for (idx, ws) in self.workstreams.iter().enumerate() {
+            if !filtered_set.contains(&idx) {
+                continue;
+            }
+
+            let sessions: &[AgentSession] = if !ws.agent_sessions.is_empty() {
+                &ws.agent_sessions
+            } else {
+                ws.agent_session.as_slice()
+            };
+
+            for (session_idx, _session) in sessions.iter().enumerate() {
+                session_rows.push((idx, session_idx));
+            }
+        }
+
+        session_rows.sort_by(|(a_idx, a_s), (b_idx, b_s)| {
+            let a_ws = &self.workstreams[*a_idx];
+            let b_ws = &self.workstreams[*b_idx];
+            let a_session = a_ws
+                .agent_sessions
+                .get(*a_s)
+                .or(a_ws.agent_session.as_ref())
+                .unwrap();
+            let b_session = b_ws
+                .agent_sessions
+                .get(*b_s)
+                .or(b_ws.agent_session.as_ref())
+                .unwrap();
+
+            agent_sort_order(a_session.status)
+                .cmp(&agent_sort_order(b_session.status))
+                .then_with(|| {
+                    a_ws.linear_issue
+                        .priority
+                        .sort_order()
+                        .cmp(&b_ws.linear_issue.priority.sort_order())
+                })
+                .then_with(|| {
+                    a_ws.linear_issue
+                        .identifier
+                        .cmp(&b_ws.linear_issue.identifier)
+                })
+                .then_with(|| b_session.last_activity.cmp(&a_session.last_activity))
+        });
+
+        if !session_rows.is_empty() {
+            items.push(VisualItem::SectionHeader(SectionType::AgentSessions));
+            if !self
+                .collapsed_sections
+                .contains(&SectionType::AgentSessions)
+            {
+                for (ws_idx, session_idx) in session_rows {
+                    items.push(VisualItem::AgentSession {
+                        ws_idx,
+                        session_idx,
+                    });
+                }
+            }
+        }
+
+        // ── Issues section (one row per issue, no sessions) ──
+        let mut issue_rows: Vec<usize> = self
             .workstreams
             .iter()
             .enumerate()
-            .map(|(idx, ws)| (ws.linear_issue.id.as_str(), idx))
+            .filter_map(|(idx, ws)| {
+                if !filtered_set.contains(&idx) {
+                    return None;
+                }
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
+                    return None;
+                }
+                Some(idx)
+            })
             .collect();
 
-        // Group by agent presence with section headers
-        let mut items = Vec::new();
-        let grouped = self.grouped_by_section();
+        issue_rows.sort_by(|a_idx, b_idx| {
+            let a_ws = &self.workstreams[*a_idx];
+            let b_ws = &self.workstreams[*b_idx];
+            a_ws.linear_issue
+                .priority
+                .sort_order()
+                .cmp(&b_ws.linear_issue.priority.sort_order())
+                .then_with(|| {
+                    a_ws.linear_issue
+                        .status
+                        .sort_order()
+                        .cmp(&b_ws.linear_issue.status.sort_order())
+                })
+        });
 
-        for (section_type, workstreams) in grouped {
-            // Collect filtered workstream indices for this section
-            let section_items: Vec<usize> = workstreams
-                .iter()
-                .filter_map(|ws| index_map.get(ws.linear_issue.id.as_str()).copied())
-                .filter(|idx| filtered_set.contains(idx))
-                .collect();
-
-            // Skip empty sections
-            if section_items.is_empty() {
-                continue;
-            }
-
-            // Add section header
-            items.push(VisualItem::SectionHeader(section_type));
-
-            // Skip items if collapsed
-            if self.collapsed_sections.contains(&section_type) {
-                continue;
-            }
-
-            // Add workstream items
-            for idx in section_items {
-                items.push(VisualItem::Workstream(idx));
+        if !issue_rows.is_empty() {
+            items.push(VisualItem::SectionHeader(SectionType::Issues));
+            if !self.collapsed_sections.contains(&SectionType::Issues) {
+                for idx in issue_rows {
+                    items.push(VisualItem::Workstream(idx));
+                }
             }
         }
 

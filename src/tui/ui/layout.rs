@@ -60,7 +60,10 @@ impl ColumnLayout {
 }
 
 /// Compute column layout based on preferred widths and available space.
-pub fn compute_column_layout(preferred: &[usize; NUM_COLUMNS], available_width: u16) -> ColumnLayout {
+pub fn compute_column_layout(
+    preferred: &[usize; NUM_COLUMNS],
+    available_width: u16,
+) -> ColumnLayout {
     let available = available_width as usize;
     if available <= PREFIX_WIDTH {
         return ColumnLayout {
@@ -301,7 +304,11 @@ pub fn ellipsis_line(width: u16) -> Line<'static> {
 }
 
 /// Fit lines to an area, adding ellipsis if content is truncated.
-pub fn fit_lines_to_area<'a>(lines: Vec<Line<'a>>, inner: Rect, keep_bottom: usize) -> Vec<Line<'a>> {
+pub fn fit_lines_to_area<'a>(
+    lines: Vec<Line<'a>>,
+    inner: Rect,
+    keep_bottom: usize,
+) -> Vec<Line<'a>> {
     let width = inner.width as usize;
     let height = inner.height as usize;
     if height == 0 || width == 0 {
@@ -359,9 +366,14 @@ pub fn render_two_col_line<'a>(
     Line::from(spans)
 }
 
-
 /// Calculate a centered popup rectangle within a container.
-pub fn popup_rect(percent_x: u16, percent_y: u16, min_width: u16, min_height: u16, r: Rect) -> Rect {
+pub fn popup_rect(
+    percent_x: u16,
+    percent_y: u16,
+    min_width: u16,
+    min_height: u16,
+    r: Rect,
+) -> Rect {
     let max_width = r.width.saturating_sub(2).max(1);
     let max_height = r.height.saturating_sub(2).max(1);
 

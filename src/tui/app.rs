@@ -1,16 +1,18 @@
+use crate::agents::UnifiedAgentWatcher;
 use crate::config::Config;
 use crate::data::{
-    AgentSession, AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus,
+    AgentSession, AgentType, AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus,
     SectionType, SortMode, VisualItem, Workstream,
 };
 use crate::integrations;
 use crate::integrations::cache;
-use crate::agents::UnifiedAgentWatcher;
 use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -21,6 +23,49 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn agent_status_rank(status: crate::data::AgentStatus) -> u8 {
+    match status {
+        crate::data::AgentStatus::WaitingForInput => 0,
+        crate::data::AgentStatus::Error => 1,
+        crate::data::AgentStatus::Running => 2,
+        crate::data::AgentStatus::Idle => 3,
+        crate::data::AgentStatus::Done => 4,
+    }
+}
+
+fn agent_type_rank(agent_type: AgentType) -> u8 {
+    match agent_type {
+        AgentType::ClaudeCode => 0,
+        AgentType::OpenClaw => 1,
+    }
+}
+
+fn repo_name_from_hint(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
+}
+
+fn matches_repo_hint(session: &AgentSession, repo_name: &str) -> bool {
+    session
+        .working_directory
+        .as_deref()
+        .and_then(|dir| Path::new(dir).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == repo_name)
+}
+
+fn pick_primary_session(sessions: &[AgentSession]) -> Option<AgentSession> {
+    sessions
+        .iter()
+        .min_by_key(|s| {
+            (
+                agent_status_rank(s.status),
+                Reverse(s.last_activity.timestamp()),
+                agent_type_rank(s.agent_type),
+            )
+        })
+        .cloned()
+}
 
 /// Search match result with excerpt
 #[derive(Clone)]
@@ -529,12 +574,19 @@ impl App {
         self.section_counts.clear();
         for &idx in &self.filtered_indices {
             if let Some(ws) = self.state.workstreams.get(idx) {
-                let section = if ws.agent_session.is_some() {
-                    SectionType::AgentSessions
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
+                    let count = if !ws.agent_sessions.is_empty() {
+                        ws.agent_sessions.len()
+                    } else {
+                        1
+                    };
+                    *self
+                        .section_counts
+                        .entry(SectionType::AgentSessions)
+                        .or_insert(0) += count;
                 } else {
-                    SectionType::Issues
-                };
-                *self.section_counts.entry(section).or_insert(0) += 1;
+                    *self.section_counts.entry(SectionType::Issues).or_insert(0) += 1;
+                }
             }
         }
 
@@ -576,7 +628,10 @@ impl App {
 
         let mut pos = self.visual_selected;
         for _ in 0..len {
-            if let Some(VisualItem::Workstream(_)) = self.visual_items.get(pos) {
+            if matches!(
+                self.visual_items.get(pos),
+                Some(VisualItem::Workstream(_)) | Some(VisualItem::AgentSession { .. })
+            ) {
                 self.visual_selected = pos;
                 return;
             }
@@ -754,7 +809,10 @@ impl App {
                     // ALSO add/update in main state immediately for real-time display
                     // Find existing workstream by issue ID and update, or append if new
                     let issue_id = &ws.linear_issue.id;
-                    if let Some(existing) = self.state.workstreams.iter_mut()
+                    if let Some(existing) = self
+                        .state
+                        .workstreams
+                        .iter_mut()
                         .find(|w| w.linear_issue.id == *issue_id)
                     {
                         *existing = *ws;
@@ -780,7 +838,8 @@ impl App {
                     // Success: reconcile main with shadow (remove stale items not in new set)
                     // Since we've been adding incrementally, main may have old items that
                     // were deleted from Linear. Remove any not present in shadow.
-                    let shadow_ids: HashSet<&str> = self.shadow_workstreams
+                    let shadow_ids: HashSet<&str> = self
+                        .shadow_workstreams
                         .iter()
                         .map(|ws| ws.linear_issue.id.as_str())
                         .collect();
@@ -898,7 +957,11 @@ impl App {
             }
 
             // Agent column
-            if let Some(session) = &ws.agent_session {
+            if let Some(session) = ws
+                .agent_session
+                .as_ref()
+                .or_else(|| ws.agent_sessions.first())
+            {
                 let label_len = match session.status {
                     crate::data::AgentStatus::Running => 3,         // RUN
                     crate::data::AgentStatus::Idle => 4,            // IDLE
@@ -1024,67 +1087,91 @@ impl App {
     /// Rebuilds visual items when sessions are added/removed or status changes.
     fn update_agent_sessions_from_watcher(&mut self, sessions: &[AgentSession]) {
         // Build lookup maps for O(1) matching
-        let session_by_id: HashMap<&str, &AgentSession> = sessions
-            .iter()
-            .map(|s| (s.id.as_str(), s))
-            .collect();
-        let session_by_branch: HashMap<&str, &AgentSession> = sessions
-            .iter()
-            .filter_map(|s| s.git_branch.as_deref().map(|b| (b, s)))
-            .collect();
-
-        let mut structure_changed = false;
-        let mut matched_session_ids: HashSet<String> = HashSet::new();
-
-        // Update existing workstream sessions
-        for ws in &mut self.state.workstreams {
-            if let Some(current_session) = &ws.agent_session {
-                // Try to find updated session by ID first, then by branch
-                let updated = session_by_id
-                    .get(current_session.id.as_str())
-                    .or_else(|| {
-                        current_session
-                            .git_branch
-                            .as_deref()
-                            .and_then(|b| session_by_branch.get(b))
-                    });
-
-                if let Some(updated) = updated {
-                    matched_session_ids.insert(updated.id.clone());
-                    if current_session.status != updated.status {
-                        structure_changed = true;
-                    }
-                    ws.agent_session = Some((*updated).clone());
-                } else {
-                    // Session no longer exists - remove it
-                    ws.agent_session = None;
-                    structure_changed = true;
-                }
+        let session_by_id: HashMap<&str, &AgentSession> =
+            sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+        let mut session_by_branch: HashMap<&str, Vec<&AgentSession>> = HashMap::new();
+        for session in sessions {
+            if let Some(branch) = session.git_branch.as_deref() {
+                session_by_branch.entry(branch).or_default().push(session);
             }
         }
 
-        // Add new unlinked sessions that weren't matched
-        for session in sessions {
-            if !matched_session_ids.contains(&session.id) {
-                // Check if this session should link to an existing workstream by branch
-                // Match against the GitHub PR branch if present
-                let linked = session.git_branch.as_ref().and_then(|branch| {
-                    self.state
-                        .workstreams
-                        .iter_mut()
-                        .find(|ws| {
-                            ws.agent_session.is_none()
-                                && ws.github_pr.as_ref().map(|pr| pr.branch.as_str()) == Some(branch.as_str())
-                        })
-                });
+        let mut structure_changed = false;
 
-                if let Some(ws) = linked {
-                    ws.agent_session = Some(session.clone());
+        // Update existing workstream sessions
+        for ws in &mut self.state.workstreams {
+            let mut updated_sessions: Vec<AgentSession> = Vec::new();
+            let mut seen_ids: HashSet<String> = HashSet::new();
+
+            let mut previous_ids: HashSet<String> =
+                ws.agent_sessions.iter().map(|s| s.id.clone()).collect();
+            if previous_ids.is_empty() {
+                if let Some(session) = &ws.agent_session {
+                    previous_ids.insert(session.id.clone());
+                }
+            }
+
+            // Update existing sessions by ID
+            let existing_sessions: Vec<AgentSession> = if !ws.agent_sessions.is_empty() {
+                ws.agent_sessions.clone()
+            } else if let Some(session) = &ws.agent_session {
+                vec![session.clone()]
+            } else {
+                vec![]
+            };
+
+            for current in existing_sessions {
+                if let Some(updated) = session_by_id.get(current.id.as_str()) {
+                    if current.status != updated.status {
+                        structure_changed = true;
+                    }
+                    seen_ids.insert(updated.id.clone());
+                    updated_sessions.push((*updated).clone());
+                } else {
                     structure_changed = true;
                 }
-                // Note: Truly unlinked sessions (no matching branch) are added during full refresh
-                // to avoid creating placeholder workstreams on every watcher poll
             }
+
+            // Add new sessions matching PR branch + repo
+            if let Some(pr) = &ws.github_pr {
+                if let Some(candidates) = session_by_branch.get(pr.branch.as_str()) {
+                    let repo_name = repo_name_from_hint(&pr.repo);
+                    for candidate in candidates {
+                        if (matches_repo_hint(candidate, repo_name)
+                            || candidate.working_directory.as_deref().is_none())
+                            && seen_ids.insert(candidate.id.clone())
+                        {
+                            updated_sessions.push((*candidate).clone());
+                            structure_changed = true;
+                        }
+                    }
+                }
+            }
+
+            // Identifier fallback (for issues without PR info)
+            if ws.github_pr.is_none() && !ws.linear_issue.identifier.is_empty() {
+                let identifier = ws.linear_issue.identifier.to_uppercase();
+                for candidate in sessions {
+                    if seen_ids.contains(&candidate.id) {
+                        continue;
+                    }
+                    if let Some(branch) = candidate.git_branch.as_deref() {
+                        if branch.to_uppercase().contains(&identifier) {
+                            seen_ids.insert(candidate.id.clone());
+                            updated_sessions.push(candidate.clone());
+                            structure_changed = true;
+                        }
+                    }
+                }
+            }
+
+            let new_ids: HashSet<String> = updated_sessions.iter().map(|s| s.id.clone()).collect();
+            if previous_ids != new_ids {
+                structure_changed = true;
+            }
+
+            ws.agent_sessions = updated_sessions;
+            ws.agent_session = pick_primary_session(&ws.agent_sessions);
         }
 
         if structure_changed {
@@ -1150,7 +1237,7 @@ impl App {
             // Append them after scored results to keep relevance ordering intact.
             let mut included: HashSet<usize> = self.filtered_indices.iter().copied().collect();
             for (idx, ws) in self.state.workstreams.iter().enumerate() {
-                if ws.agent_session.is_some()
+                if (!ws.agent_sessions.is_empty() || ws.agent_session.is_some())
                     && ws.linear_issue.identifier.is_empty()
                     && included.insert(idx)
                 {
@@ -1209,41 +1296,9 @@ impl App {
             return;
         };
 
-        // Get current workstream index
-        let ws_idx = match self.visual_items.get(self.visual_selected) {
-            Some(VisualItem::Workstream(idx)) => *idx,
-            _ => return,
-        };
-
-        let Some(ws) = self.state.workstreams.get_mut(ws_idx) else {
-            return;
-        };
-
-        // Get fresh session snapshot and update this workstream
+        // Get fresh session snapshot and update workstreams
         let sessions = watcher.get_sessions_snapshot();
-
-        // Try to find matching session by ID or branch
-        if let Some(current) = &ws.agent_session {
-            let updated = sessions
-                .iter()
-                .find(|s| s.id == current.id)
-                .or_else(|| {
-                    current.git_branch.as_ref().and_then(|branch| {
-                        sessions.iter().find(|s| s.git_branch.as_deref() == Some(branch))
-                    })
-                });
-
-            if let Some(updated) = updated {
-                ws.agent_session = Some(updated.clone());
-            }
-        } else if let Some(pr) = &ws.github_pr {
-            // Try to link an unlinked session by PR branch
-            if let Some(session) = sessions.iter().find(|s| {
-                s.git_branch.as_deref() == Some(pr.branch.as_str())
-            }) {
-                ws.agent_session = Some(session.clone());
-            }
-        }
+        self.update_agent_sessions_from_watcher(&sessions);
     }
 
     pub fn go_to_top(&mut self) {
@@ -1331,8 +1386,9 @@ impl App {
     pub fn toggle_section_fold(&mut self) {
         let section = match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
+            Some(VisualItem::AgentSession { .. }) => Some(SectionType::AgentSessions),
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
-                if ws.agent_session.is_some() {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
                     SectionType::AgentSessions
                 } else {
                     SectionType::Issues
@@ -1355,6 +1411,33 @@ impl App {
     pub fn selected_workstream(&self) -> Option<&Workstream> {
         match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx),
+            Some(VisualItem::AgentSession { ws_idx, .. }) => self.state.workstreams.get(*ws_idx),
+            _ => None,
+        }
+    }
+
+    /// Get the currently selected agent session (if any)
+    pub fn selected_agent_session(&self) -> Option<&AgentSession> {
+        match self.visual_items.get(self.visual_selected) {
+            Some(VisualItem::AgentSession {
+                ws_idx,
+                session_idx,
+            }) => self
+                .state
+                .workstreams
+                .get(*ws_idx)
+                .and_then(|ws| ws.agent_sessions.get(*session_idx))
+                .or_else(|| {
+                    self.state
+                        .workstreams
+                        .get(*ws_idx)
+                        .and_then(|ws| ws.agent_session.as_ref())
+                }),
+            Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).and_then(|ws| {
+                ws.agent_session
+                    .as_ref()
+                    .or_else(|| ws.agent_sessions.first())
+            }),
             _ => None,
         }
     }
@@ -1363,8 +1446,9 @@ impl App {
     pub fn selected_section(&self) -> Option<SectionType> {
         match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
+            Some(VisualItem::AgentSession { .. }) => Some(SectionType::AgentSessions),
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
-                if ws.agent_session.is_some() {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
                     SectionType::AgentSessions
                 } else {
                     SectionType::Issues
@@ -1545,10 +1629,8 @@ impl App {
     }
 
     pub async fn teleport_to_session(&self) -> Result<()> {
-        if let Some(ws) = self.modal_issue() {
-            if let Some(session) = &ws.agent_session {
-                integrations::claude::focus_session_window(session).await?;
-            }
+        if let Some(session) = self.selected_agent_session() {
+            integrations::claude::focus_session_window(session).await?;
         }
         Ok(())
     }
@@ -2004,7 +2086,9 @@ impl App {
             .enumerate()
             .filter(|(_, ws)| {
                 // Always show unlinked agent sessions regardless of filters
-                if ws.agent_session.is_some() && ws.linear_issue.identifier.is_empty() {
+                if (!ws.agent_sessions.is_empty() || ws.agent_session.is_some())
+                    && ws.linear_issue.identifier.is_empty()
+                {
                     return true;
                 }
 
@@ -2044,12 +2128,10 @@ impl App {
                 // Project filter (empty = show all) - O(1) lookup via pre-built map
                 if !self.filter_projects.is_empty() {
                     match &ws.linear_issue.project {
-                        Some(project_name) => {
-                            match project_name_to_id.get(project_name.as_str()) {
-                                Some(id) if self.filter_projects.contains(*id) => {}
-                                _ => return false,
-                            }
-                        }
+                        Some(project_name) => match project_name_to_id.get(project_name.as_str()) {
+                            Some(id) if self.filter_projects.contains(*id) => {}
+                            _ => return false,
+                        },
                         None => return false, // No project, filtered out
                     }
                 }

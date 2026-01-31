@@ -36,6 +36,7 @@ fn make_workstream(id: &str, identifier: &str, status: LinearStatus) -> Workstre
         },
         github_pr: None,
         vercel_deployment: None,
+        agent_sessions: vec![],
         agent_session: None,
         stale: false,
     }
@@ -50,7 +51,7 @@ fn make_workstream_with_agent(
 ) -> Workstream {
     let mut ws = make_workstream(id, identifier, status);
     ws.linear_issue.priority = priority;
-    ws.agent_session = Some(AgentSession {
+    let session = AgentSession {
         id: format!("session-{}", id),
         agent_type: AgentType::ClaudeCode,
         status: agent_status,
@@ -61,7 +62,9 @@ fn make_workstream_with_agent(
         last_activity: Utc::now(),
         window_id: None,
         activity: Default::default(),
-    });
+    };
+    ws.agent_sessions = vec![session.clone()];
+    ws.agent_session = Some(session);
     ws
 }
 
@@ -144,6 +147,7 @@ fn test_build_visual_items_groups_by_section() {
     let mut agent_sessions_header_found = false;
     let mut issues_header_found = false;
     let mut workstream_count = 0;
+    let mut agent_session_count = 0;
 
     for item in &items {
         match item {
@@ -151,6 +155,7 @@ fn test_build_visual_items_groups_by_section() {
                 SectionType::AgentSessions => agent_sessions_header_found = true,
                 SectionType::Issues => issues_header_found = true,
             },
+            VisualItem::AgentSession { .. } => agent_session_count += 1,
             VisualItem::Workstream(_) => workstream_count += 1,
         }
     }
@@ -160,7 +165,8 @@ fn test_build_visual_items_groups_by_section() {
         "AgentSessions section header should exist"
     );
     assert!(issues_header_found, "Issues section header should exist");
-    assert_eq!(workstream_count, 3);
+    assert_eq!(agent_session_count, 2);
+    assert_eq!(workstream_count, 1);
 }
 
 #[test]
@@ -226,10 +232,11 @@ fn test_build_visual_items_collapsed_sections() {
                     agent_sessions_header_found = true;
                 }
             }
+            VisualItem::AgentSession { .. } => agent_sessions_count += 1,
             VisualItem::Workstream(idx) => {
-                if state.workstreams[*idx].agent_session.is_some() {
-                    agent_sessions_count += 1;
-                } else {
+                if state.workstreams[*idx].agent_sessions.is_empty()
+                    && state.workstreams[*idx].agent_session.is_none()
+                {
                     issues_count += 1;
                 }
             }
@@ -346,8 +353,8 @@ fn test_agent_sessions_sorted_by_status_then_priority() {
     let workstream_order: Vec<usize> = items
         .iter()
         .filter_map(|item| {
-            if let VisualItem::Workstream(idx) = item {
-                Some(*idx)
+            if let VisualItem::AgentSession { ws_idx, .. } = item {
+                Some(*ws_idx)
             } else {
                 None
             }
@@ -448,17 +455,18 @@ fn test_agent_sessions_appear_before_issues() {
             VisualItem::SectionHeader(SectionType::Issues) => {
                 in_agent_section = false;
             }
-            VisualItem::Workstream(idx) => {
+            VisualItem::AgentSession { ws_idx, .. } => {
                 if in_agent_section {
-                    agent_workstream_indices.push(*idx);
+                    agent_workstream_indices.push(*ws_idx);
                     if found_issue_after_agent {
                         panic!("Agent session appeared after Issues section");
                     }
-                } else {
-                    issue_workstream_indices.push(*idx);
-                    if !agent_workstream_indices.is_empty() {
-                        found_issue_after_agent = true;
-                    }
+                }
+            }
+            VisualItem::Workstream(idx) => {
+                issue_workstream_indices.push(*idx);
+                if !agent_workstream_indices.is_empty() {
+                    found_issue_after_agent = true;
                 }
             }
         }

@@ -2,8 +2,7 @@
 
 use super::icons;
 use super::layout::{
-    display_width, fit_lines_to_area, popup_rect, render_two_col_line,
-    truncate_str, SEP_WIDTH,
+    display_width, fit_lines_to_area, popup_rect, render_two_col_line, truncate_str, SEP_WIDTH,
 };
 use super::status::{agent_status_config, linear_status_config, priority_config};
 use super::table::highlight_search_matches;
@@ -260,7 +259,11 @@ pub fn draw_link_menu(f: &mut Frame, app: &App) {
         }));
 
         // Agent session details (if linked)
-        if let Some(session) = &ws.agent_session {
+        if let Some(session) = ws
+            .agent_session
+            .as_ref()
+            .or_else(|| ws.agent_sessions.first())
+        {
             push_plain!(Line::from(""));
 
             // Agent type prefix and status
@@ -777,7 +780,7 @@ pub fn draw_links_popup(f: &mut Frame, app: &App) {
         let has_linear = !issue.url.is_empty();
         let has_pr = ws.github_pr.is_some();
         let has_vercel = ws.vercel_deployment.is_some();
-        let has_session = ws.agent_session.is_some();
+        let has_session = !ws.agent_sessions.is_empty() || ws.agent_session.is_some();
 
         vec![
             Line::from(""),
@@ -814,7 +817,7 @@ pub fn draw_links_popup(f: &mut Frame, app: &App) {
                 },
             )),
             Line::from(Span::styled(
-                if ws.agent_session.is_some() {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
                     "  [4] 󰚩 Agent: teleport".to_string()
                 } else {
                     "  [4] 󰚩 Agent: (no session)".to_string()
@@ -1090,4 +1093,3 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
 
     lines
 }
-

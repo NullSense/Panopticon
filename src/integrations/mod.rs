@@ -69,15 +69,22 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
 
         // Find agent session via O(1) cache lookup by git branch
         // Linear's working_directory is the branch name, match against session's git_branch
+        let agent_sessions = agent_cache.find_all_for_branch_or_identifier(
+            issue.working_directory.as_deref(),
+            &issue.issue.identifier,
+            pr.as_ref().map(|p| p.repo.as_str()),
+        );
         let agent = agent_cache.find_for_branch_or_identifier(
             issue.working_directory.as_deref(),
             &issue.issue.identifier,
+            pr.as_ref().map(|p| p.repo.as_str()),
         );
 
         workstreams.push(Workstream {
             linear_issue: issue.issue,
             github_pr: pr,
             vercel_deployment: deployment,
+            agent_sessions,
             agent_session: agent,
             stale: false,
         });
@@ -86,7 +93,15 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
     // Add unlinked sessions (sessions not matched to any issue)
     let matched_session_ids: std::collections::HashSet<String> = workstreams
         .iter()
-        .filter_map(|ws| ws.agent_session.as_ref().map(|s| s.id.clone()))
+        .flat_map(|ws| {
+            if !ws.agent_sessions.is_empty() {
+                ws.agent_sessions.iter().map(|s| s.id.clone()).collect()
+            } else if let Some(session) = ws.agent_session.as_ref() {
+                vec![session.id.clone()]
+            } else {
+                vec![]
+            }
+        })
         .collect();
 
     for session in agent_cache.all_sessions() {
@@ -95,6 +110,7 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
                 linear_issue: create_placeholder_issue(session),
                 github_pr: None,
                 vercel_deployment: None,
+                agent_sessions: vec![session.clone()],
                 agent_session: Some(session.clone()),
                 stale: false,
             });
@@ -227,13 +243,24 @@ pub async fn fetch_workstreams_incremental(
                 };
 
                 // Find agent session via O(1) cache lookup by git branch
+                let agent_sessions = agent_cache.find_all_for_branch_or_identifier(
+                    issue.working_directory.as_deref(),
+                    &issue.issue.identifier,
+                    pr.as_ref().map(|p| p.repo.as_str()),
+                );
                 let agent = agent_cache.find_for_branch_or_identifier(
-            issue.working_directory.as_deref(),
-            &issue.issue.identifier,
-        );
+                    issue.working_directory.as_deref(),
+                    &issue.issue.identifier,
+                    pr.as_ref().map(|p| p.repo.as_str()),
+                );
 
-                // Track matched session ID
-                if let Some(ref session) = agent {
+                // Track matched session IDs
+                if !agent_sessions.is_empty() {
+                    let mut guard = matched_ids.lock().await;
+                    for session in &agent_sessions {
+                        guard.insert(session.id.clone());
+                    }
+                } else if let Some(ref session) = agent {
                     matched_ids.lock().await.insert(session.id.clone());
                 }
 
@@ -241,11 +268,17 @@ pub async fn fetch_workstreams_incremental(
                     linear_issue: issue.issue,
                     github_pr: pr,
                     vercel_deployment: deployment,
+                    agent_sessions,
                     agent_session: agent,
                     stale: false,
                 };
 
-                crate::util::send_or_log(&tx, RefreshResult::Workstream(Box::new(ws)), "workstream").await;
+                crate::util::send_or_log(
+                    &tx,
+                    RefreshResult::Workstream(Box::new(ws)),
+                    "workstream",
+                )
+                .await;
             }
         })
         .buffer_unordered(5) // Process 5 issues concurrently
@@ -260,10 +293,16 @@ pub async fn fetch_workstreams_incremental(
                 linear_issue: create_placeholder_issue(session),
                 github_pr: None,
                 vercel_deployment: None,
+                agent_sessions: vec![session.clone()],
                 agent_session: Some(session.clone()),
                 stale: false,
             };
-            crate::util::send_or_log(&tx, RefreshResult::Workstream(Box::new(ws)), "unlinked session").await;
+            crate::util::send_or_log(
+                &tx,
+                RefreshResult::Workstream(Box::new(ws)),
+                "unlinked session",
+            )
+            .await;
         }
     }
 
@@ -281,24 +320,43 @@ pub struct LinkedLinearIssue {
 /// Create a placeholder issue for unlinked agent sessions
 /// These sessions appear in the Agent Sessions section but aren't linked to Linear issues
 fn create_placeholder_issue(session: &AgentSession) -> LinearIssue {
-    // Build title showing path + branch: ~/Projects/sandbox (main)
-    let shortened_path = session.working_directory.as_ref().map(|p| {
-        // Shorten path: /home/user/Projects/foo -> ~/Projects/foo
-        if let Some(home) = dirs::home_dir() {
-            if let Some(home_str) = home.to_str() {
-                if let Some(stripped) = p.strip_prefix(home_str) {
-                    return format!("~{}", stripped);
+    let title = if session.agent_type == crate::data::AgentType::OpenClaw {
+        let via = session
+            .activity
+            .surface_label
+            .clone()
+            .or_else(|| session.activity.surface.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let profile = session
+            .activity
+            .profile
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let mut display = format!("Via {} / {}", via, profile);
+        if let Some(branch) = &session.git_branch {
+            display.push_str(&format!(" ({})", branch));
+        }
+        display
+    } else {
+        // Build title showing path + branch: ~/Projects/sandbox (main)
+        let shortened_path = session.working_directory.as_ref().map(|p| {
+            // Shorten path: /home/user/Projects/foo -> ~/Projects/foo
+            if let Some(home) = dirs::home_dir() {
+                if let Some(home_str) = home.to_str() {
+                    if let Some(stripped) = p.strip_prefix(home_str) {
+                        return format!("~{}", stripped);
+                    }
                 }
             }
-        }
-        p.clone()
-    });
+            p.clone()
+        });
 
-    let title = match (&shortened_path, &session.git_branch) {
-        (Some(path), Some(branch)) => format!("{} ({})", path, branch),
-        (Some(path), None) => path.clone(),
-        (None, Some(branch)) => branch.clone(),
-        (None, None) => "Unknown session".to_string(),
+        match (&shortened_path, &session.git_branch) {
+            (Some(path), Some(branch)) => format!("{} ({})", path, branch),
+            (Some(path), None) => path.clone(),
+            (None, Some(branch)) => branch.clone(),
+            (None, None) => "Unknown session".to_string(),
+        }
     };
 
     let description = session.working_directory.clone();

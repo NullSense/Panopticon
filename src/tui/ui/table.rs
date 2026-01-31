@@ -2,10 +2,13 @@
 
 use super::icons;
 use super::layout::{
-    compute_column_layout, display_width, pad_to_width, title_column_offset, truncate_with_ellipsis,
-    ColumnLayout, PREFIX, SEP,
+    compute_column_layout, display_width, pad_to_width, title_column_offset,
+    truncate_with_ellipsis, ColumnLayout, PREFIX, SEP,
 };
-use super::status::{agent_status_config, linear_status_config, pr_status_config, priority_config, vercel_status_config};
+use super::status::{
+    agent_status_config, linear_status_config, pr_status_config, priority_config,
+    vercel_status_config,
+};
 use crate::data::{AgentStatus, SectionType, VisualItem};
 use crate::tui::app::{
     COL_IDX_AGENT, COL_IDX_ID, COL_IDX_PR, COL_IDX_PRIORITY, COL_IDX_STATUS, COL_IDX_TIME,
@@ -26,14 +29,16 @@ pub fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .state
         .workstreams
         .iter()
-        .filter(|ws| {
-            ws.agent_session
-                .as_ref()
-                .map(|s| {
-                    s.status == AgentStatus::Running || s.status == AgentStatus::WaitingForInput
-                })
-                .unwrap_or(false)
+        .flat_map(|ws| {
+            if !ws.agent_sessions.is_empty() {
+                ws.agent_sessions.iter().collect::<Vec<_>>()
+            } else if let Some(session) = ws.agent_session.as_ref() {
+                vec![session]
+            } else {
+                vec![]
+            }
         })
+        .filter(|s| s.status == AgentStatus::Running || s.status == AgentStatus::WaitingForInput)
         .count();
 
     let border_style = if app.state.search_mode {
@@ -169,7 +174,12 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
         Alignment::Left,
         header_dim,
     );
-    push_header(COL_IDX_TITLE, "Title".to_string(), Alignment::Left, header_dim);
+    push_header(
+        COL_IDX_TITLE,
+        "Title".to_string(),
+        Alignment::Left,
+        header_dim,
+    );
     push_header(
         COL_IDX_PR,
         header_label(icons::HEADER_PR, "PR"),
@@ -249,6 +259,31 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     final_style,
                 )])));
             }
+            VisualItem::AgentSession {
+                ws_idx,
+                session_idx,
+            } => {
+                if let Some(ws) = app.state.workstreams.get(*ws_idx) {
+                    let session = ws
+                        .agent_sessions
+                        .get(*session_idx)
+                        .or(ws.agent_session.as_ref());
+                    let search_query = if !app.state.search_query.is_empty() {
+                        Some(app.state.search_query.as_str())
+                    } else {
+                        None
+                    };
+                    let row = build_workstream_row(
+                        ws,
+                        session,
+                        is_selected,
+                        &layout,
+                        search_query,
+                        app.frame_now,
+                    );
+                    items.push(row);
+                }
+            }
             VisualItem::Workstream(ws_idx) => {
                 if let Some(ws) = app.state.workstreams.get(*ws_idx) {
                     let search_query = if !app.state.search_query.is_empty() {
@@ -256,7 +291,14 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         None
                     };
-                    let row = build_workstream_row(ws, is_selected, &layout, search_query, app.frame_now);
+                    let row = build_workstream_row(
+                        ws,
+                        None,
+                        is_selected,
+                        &layout,
+                        search_query,
+                        app.frame_now,
+                    );
                     items.push(row);
 
                     if let Some(search_match) = app.search_excerpts.get(ws_idx) {
@@ -299,7 +341,10 @@ fn header_label(icon: &str, label: &str) -> String {
 /// - ("TUI", None) for openclaw-tui
 /// - ("Discord DM", Some("@username")) for DMs
 /// - ("Discord", Some("#channel-name in Guild")) for guild channels
-fn parse_surface_detail(surface: Option<&str>, label: Option<&str>) -> Option<(String, Option<String>)> {
+fn parse_surface_detail(
+    surface: Option<&str>,
+    label: Option<&str>,
+) -> Option<(String, Option<String>)> {
     let label = label?;
 
     // TUI session
@@ -324,7 +369,10 @@ fn parse_surface_detail(surface: Option<&str>, label: Option<&str>) -> Option<(S
 
     // Raw discord channel ID: "discord:channel:1234567890"
     if let Some(channel_id) = label.strip_prefix("discord:channel:") {
-        return Some(("Discord".to_string(), Some(format!("channel {}", channel_id))));
+        return Some((
+            "Discord".to_string(),
+            Some(format!("channel {}", channel_id)),
+        ));
     }
 
     // Fallback: use surface type if available
@@ -377,17 +425,19 @@ fn remap_dark_gray_to_gray(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
 
 fn build_workstream_row(
     ws: &crate::data::Workstream,
+    session_override: Option<&crate::data::AgentSession>,
     selected: bool,
     layout: &ColumnLayout,
     search_query: Option<&str>,
     frame_now: chrono::DateTime<chrono::Utc>,
 ) -> ListItem<'static> {
-    WorkstreamRowBuilder::new(ws, layout, search_query, frame_now).build(selected)
+    WorkstreamRowBuilder::new(ws, session_override, layout, search_query, frame_now).build(selected)
 }
 
 /// Builder for workstream row UI elements.
 struct WorkstreamRowBuilder<'a> {
     ws: &'a crate::data::Workstream,
+    session_override: Option<&'a crate::data::AgentSession>,
     layout: &'a ColumnLayout,
     search_query: Option<&'a str>,
     sep_style: Style,
@@ -398,17 +448,25 @@ struct WorkstreamRowBuilder<'a> {
 impl<'a> WorkstreamRowBuilder<'a> {
     fn new(
         ws: &'a crate::data::Workstream,
+        session_override: Option<&'a crate::data::AgentSession>,
         layout: &'a ColumnLayout,
         search_query: Option<&'a str>,
         frame_now: chrono::DateTime<chrono::Utc>,
     ) -> Self {
         Self {
             ws,
+            session_override,
             layout,
             search_query,
             sep_style: Style::default().fg(Color::DarkGray),
             frame_now,
         }
+    }
+
+    fn session(&self) -> Option<&crate::data::AgentSession> {
+        self.session_override
+            .or(self.ws.agent_session.as_ref())
+            .or_else(|| self.ws.agent_sessions.first())
     }
 
     fn build(self, selected: bool) -> ListItem<'static> {
@@ -602,7 +660,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
     }
 
     fn agent_span(&self, width: usize) -> Span<'static> {
-        let (text, style) = if let Some(session) = &self.ws.agent_session {
+        let (text, style) = if let Some(session) = self.session() {
             let cfg = agent_status_config(session.status);
 
             // Type prefix with surface indicator for OpenClaw
@@ -641,18 +699,10 @@ impl<'a> WorkstreamRowBuilder<'a> {
                         self.frame_now.signed_duration_since(session.last_activity);
                     if seconds_since_activity.num_seconds() > 3 {
                         // Been a while with no tool = effectively idle
-                        format!(
-                            "{}{} Idle",
-                            icons::AGENT_IDLE,
-                            icons::AGENT_IDLE_ASCII
-                        )
+                        format!("{}{} Idle", icons::AGENT_IDLE, icons::AGENT_IDLE_ASCII)
                     } else {
                         // Recent activity, no tool = thinking between steps
-                        format!(
-                            "{}{} Thinking",
-                            icons::THINKING,
-                            icons::THINKING_ASCII
-                        )
+                        format!("{}{} Thinking", icons::THINKING, icons::THINKING_ASCII)
                     }
                 }
             } else {
@@ -692,7 +742,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
                 Style::default().fg(Color::Yellow),
             );
         }
-        let elapsed = if let Some(session) = &self.ws.agent_session {
+        let elapsed = if let Some(session) = self.session() {
             let duration = self.frame_now.signed_duration_since(session.started_at);
             if session.status == AgentStatus::Done {
                 "done".to_string()
@@ -724,7 +774,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
     /// - Line 5: Last prompt (if available)
     /// - Line 6: Error (if any)
     fn agent_detail_lines(&self) -> Vec<Line<'static>> {
-        let session = match self.ws.agent_session.as_ref() {
+        let session = match self.session() {
             Some(s) => s,
             None => return vec![],
         };
@@ -1133,7 +1183,10 @@ mod tests {
         let result = parse_surface_detail(Some("discord"), Some("discord:channel:1234567890"));
         assert_eq!(
             result,
-            Some(("Discord".to_string(), Some("channel 1234567890".to_string())))
+            Some((
+                "Discord".to_string(),
+                Some("channel 1234567890".to_string())
+            ))
         );
     }
 

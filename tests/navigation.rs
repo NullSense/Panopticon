@@ -81,6 +81,7 @@ fn make_workstream_with_hierarchy(
         },
         github_pr: None,
         vercel_deployment: None,
+        agent_sessions: vec![],
         agent_session: None,
         stale: false,
     }
@@ -748,6 +749,7 @@ fn make_workstream_with_status_children(
         },
         github_pr: None,
         vercel_deployment: None,
+        agent_sessions: vec![],
         agent_session: None,
         stale: false,
     }

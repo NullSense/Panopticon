@@ -189,15 +189,16 @@ pub fn update_session_with_activity(
         }
     } else {
         // Get or create session
-        let session = state.sessions.entry(session_id.to_string()).or_insert_with(|| {
-            ClaudeSessionState {
+        let session = state
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| ClaudeSessionState {
                 path: path.to_string(),
                 git_branch: git_branch.map(|s| s.to_string()),
                 status: status.to_string(),
                 last_active: now,
                 activity: ClaudeActivityState::default(),
-            }
-        });
+            });
 
         // Update basic fields
         session.path = path.to_string();
@@ -479,7 +480,10 @@ mod tests {
 
         apply_activity_update(&mut activity, &update, 0);
 
-        assert_eq!(activity.model, Some("claude-sonnet-4-5-20250929".to_string()));
+        assert_eq!(
+            activity.model,
+            Some("claude-sonnet-4-5-20250929".to_string())
+        );
         // Stats should be reset
         assert_eq!(activity.stats.files_read, 0);
     }
@@ -610,7 +614,10 @@ mod tests {
         assert!(truncated.ends_with("..."));
 
         // Multi-line: only first line used
-        assert_eq!(truncate_prompt("First line\nSecond line", 100), "First line");
+        assert_eq!(
+            truncate_prompt("First line\nSecond line", 100),
+            "First line"
+        );
     }
 
     #[test]

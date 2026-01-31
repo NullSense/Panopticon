@@ -60,6 +60,7 @@ fn make_workstream_with_project(id: &str, identifier: &str, project: Option<&str
         },
         github_pr: None,
         vercel_deployment: None,
+        agent_sessions: vec![],
         agent_session: None,
         stale: false,
     }

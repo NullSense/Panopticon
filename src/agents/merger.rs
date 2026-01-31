@@ -1,48 +1,39 @@
 //! Session merging logic for combining multiple agent sources
 //!
 //! Pure functions for merging Claude and OpenClaw sessions with deduplication.
-//! Claude sessions take precedence when both exist for the same git branch.
+//! Claude sessions are kept first; duplicates are removed by session ID.
 
 use crate::data::AgentSession;
 use std::collections::HashSet;
 
 /// Merge sessions from Claude and OpenClaw sources.
 ///
-/// Claude sessions take precedence over OpenClaw sessions when both have
-/// the same git branch. Sessions without branches are always included.
+/// Claude sessions are listed first, followed by OpenClaw sessions.
+/// Duplicate session IDs are removed to avoid accidental repeats.
 ///
 /// # Arguments
 /// * `claude_sessions` - Sessions from Claude Code watcher
 /// * `openclaw_sessions` - Sessions from OpenClaw watcher
 ///
 /// # Returns
-/// Combined list with Claude precedence for duplicate branches
+/// Combined list with Claude-first ordering and ID deduplication
 pub fn merge_sessions(
     claude_sessions: Vec<AgentSession>,
     openclaw_sessions: Vec<AgentSession>,
 ) -> Vec<AgentSession> {
     let mut result = Vec::new();
-    let mut seen_branches: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
-    // Add all Claude sessions first (they take precedence)
+    // Add all Claude sessions first
     for session in claude_sessions {
-        if let Some(branch) = &session.git_branch {
-            seen_branches.insert(branch.clone());
+        if seen_ids.insert(session.id.clone()) {
+            result.push(session);
         }
-        result.push(session);
     }
 
-    // Add OpenClaw sessions only if branch not already present
+    // Add OpenClaw sessions unless the ID already exists
     for session in openclaw_sessions {
-        let should_add = match &session.git_branch {
-            Some(branch) => !seen_branches.contains(branch),
-            None => true, // Always add sessions without branches
-        };
-
-        if should_add {
-            if let Some(branch) = &session.git_branch {
-                seen_branches.insert(branch.clone());
-            }
+        if seen_ids.insert(session.id.clone()) {
             result.push(session);
         }
     }
@@ -92,14 +83,15 @@ mod tests {
     }
 
     #[test]
-    fn deduplicates_by_branch() {
+    fn keeps_both_when_ids_differ() {
         let claude = vec![make_session("c1", Some("main"), AgentType::ClaudeCode)];
         let openclaw = vec![make_session("o1", Some("main"), AgentType::OpenClaw)];
 
         let result = merge_sessions(claude, openclaw);
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "c1");
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|s| s.id == "c1"));
+        assert!(result.iter().any(|s| s.id == "o1"));
     }
 
     #[test]

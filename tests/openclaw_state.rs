@@ -104,7 +104,8 @@ mod transcript_header_parsing {
 
     #[test]
     fn parses_transcript_header_with_int_timestamp() {
-        let jsonl = r#"{"type":"session","id":"abc123","cwd":"/home/user/project","timestamp":1706745600}"#;
+        let jsonl =
+            r#"{"type":"session","id":"abc123","cwd":"/home/user/project","timestamp":1706745600}"#;
         let header: TranscriptHeader = serde_json::from_str(jsonl).unwrap();
 
         assert_eq!(header.entry_type, "session");
