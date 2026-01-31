@@ -5,9 +5,9 @@ use super::layout::{
     display_width, fit_lines_to_area, popup_rect, render_two_col_line,
     truncate_str, SEP_WIDTH,
 };
-use super::status::{linear_status_config, priority_config};
+use super::status::{agent_status_config, linear_status_config, priority_config};
 use super::table::highlight_search_matches;
-use crate::data::{sort_children, LinearChildRef};
+use crate::data::{sort_children, AgentStatus, AgentType, LinearChildRef};
 use crate::tui::keybindings::{generate_footer_hints, Mode};
 use crate::tui::search::FuzzySearch;
 use crate::tui::App;
@@ -258,6 +258,172 @@ pub fn draw_link_menu(f: &mut Frame, app: &App) {
                 ),
             ],
         }));
+
+        // Agent session details (if linked)
+        if let Some(session) = &ws.agent_session {
+            push_plain!(Line::from(""));
+
+            // Agent type prefix and status
+            let type_prefix = match session.agent_type {
+                AgentType::ClaudeCode => "CC",
+                AgentType::OpenClaw => "OC",
+            };
+            let status_cfg = agent_status_config(session.status);
+
+            // Determine detailed status text
+            let status_text = match session.status {
+                AgentStatus::Running => {
+                    if let Some(tool) = &session.activity.current_tool {
+                        format!("Running ({})", tool)
+                    } else {
+                        "Running".to_string()
+                    }
+                }
+                AgentStatus::Idle => "Idle".to_string(),
+                AgentStatus::WaitingForInput => "Waiting for input".to_string(),
+                AgentStatus::Done => "Done".to_string(),
+                AgentStatus::Error => "Error".to_string(),
+            };
+
+            // First line: Agent type + status
+            items.push(IssueLine::TwoCol(TwoColRow {
+                left: vec![
+                    Span::styled(
+                        format!("  {} ", icons::HEADER_AGENT),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled("Agent: ", label_style),
+                    Span::styled(type_prefix.to_string(), active_style),
+                ],
+                right: vec![
+                    Span::styled(format!("{} ", status_cfg.icon), status_cfg.style),
+                    Span::styled("Status: ", label_style),
+                    Span::styled(status_text, status_cfg.style),
+                ],
+            }));
+
+            // Second line: Model + Surface/Profile (OpenClaw) or Dir (Claude)
+            let model_text = session
+                .activity
+                .model_short
+                .clone()
+                .unwrap_or_else(|| "-".to_string());
+
+            // For OpenClaw, show surface and profile; for Claude, show directory
+            let right_content = if session.agent_type == AgentType::OpenClaw {
+                // Surface info (TUI, Discord, etc.)
+                let surface_text = session
+                    .activity
+                    .surface_label
+                    .clone()
+                    .or_else(|| session.activity.surface.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                vec![
+                    Span::styled("Via: ", label_style),
+                    Span::styled(surface_text, Style::default().fg(Color::Yellow)),
+                ]
+            } else {
+                // Working directory for Claude Code
+                let dir_text = session
+                    .working_directory
+                    .as_ref()
+                    .map(|d| {
+                        if let Some(home) = dirs::home_dir() {
+                            if let Some(home_str) = home.to_str() {
+                                if let Some(stripped) = d.strip_prefix(home_str) {
+                                    return format!("~{}", stripped);
+                                }
+                            }
+                        }
+                        truncate_str(d, 30).to_string()
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                vec![
+                    Span::styled("Dir: ", label_style),
+                    Span::styled(dir_text, inactive_style),
+                ]
+            };
+
+            items.push(IssueLine::TwoCol(TwoColRow {
+                left: vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("Model: ", label_style),
+                    Span::styled(model_text, Style::default().fg(Color::Magenta)),
+                ],
+                right: right_content,
+            }));
+
+            // Third line: Profile (OpenClaw) or Branch (both)
+            if session.agent_type == AgentType::OpenClaw {
+                // Show profile and working directory for OpenClaw
+                let profile_text = session
+                    .activity
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
+                let dir_text = session
+                    .working_directory
+                    .as_ref()
+                    .map(|d| {
+                        if let Some(home) = dirs::home_dir() {
+                            if let Some(home_str) = home.to_str() {
+                                if let Some(stripped) = d.strip_prefix(home_str) {
+                                    return format!("~{}", stripped);
+                                }
+                            }
+                        }
+                        truncate_str(d, 25).to_string()
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+
+                items.push(IssueLine::TwoCol(TwoColRow {
+                    left: vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled("Profile: ", label_style),
+                        Span::styled(profile_text, Style::default().fg(Color::Green)),
+                    ],
+                    right: vec![
+                        Span::styled("Dir: ", label_style),
+                        Span::styled(dir_text, inactive_style),
+                    ],
+                }));
+            }
+
+            // Fourth line: Git branch + current target (if available)
+            if session.git_branch.is_some() || session.activity.current_target.is_some() {
+                let branch_text = session
+                    .git_branch
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string());
+                let target_text = session
+                    .activity
+                    .current_target
+                    .as_ref()
+                    .map(|t| truncate_str(t, 30).to_string())
+                    .unwrap_or_default();
+
+                let mut row = TwoColRow {
+                    left: vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled("Branch: ", label_style),
+                        Span::styled(
+                            truncate_str(&branch_text, 25).to_string(),
+                            Style::default().fg(Color::Blue),
+                        ),
+                    ],
+                    right: vec![],
+                };
+
+                if !target_text.is_empty() {
+                    row.right = vec![
+                        Span::styled("Target: ", label_style),
+                        Span::styled(target_text, inactive_style),
+                    ];
+                }
+
+                items.push(IssueLine::TwoCol(row));
+            }
+        }
 
         // Parent issue - selectable with j/k, highlighted when selected
         if let Some(parent) = &issue.parent {

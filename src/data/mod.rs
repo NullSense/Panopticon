@@ -360,6 +360,12 @@ pub struct AgentActivity {
     pub subagent_count: u32,
     /// Last error
     pub last_error: Option<String>,
+    /// Surface/interface (webchat, discord, slack, etc.) - OpenClaw
+    pub surface: Option<String>,
+    /// Label with more detail (e.g., "openclaw-tui", channel name) - OpenClaw
+    pub surface_label: Option<String>,
+    /// Agent profile name (main, personal, work, etc.) - OpenClaw
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,15 +389,14 @@ pub struct AgentSession {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentType {
     ClaudeCode,
-    Clawdbot,
+    OpenClaw,
 }
 
 impl AgentType {
-    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude",
-            Self::Clawdbot => "Clawdbot",
+            Self::OpenClaw => "OpenClaw",
         }
     }
 }

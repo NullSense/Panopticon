@@ -379,6 +379,10 @@ fn map_activity_to_data(state: &ClaudeActivityState) -> crate::data::AgentActivi
         },
         subagent_count: state.subagents.len() as u32,
         last_error: state.last_error.clone(),
+        // OpenClaw-specific fields (not applicable to Claude Code)
+        surface: None,
+        surface_label: None,
+        profile: None,
     }
 }
 

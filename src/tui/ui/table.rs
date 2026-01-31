@@ -564,7 +564,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
             let cfg = agent_status_config(session.status);
             let type_prefix = match session.agent_type {
                 crate::data::AgentType::ClaudeCode => "CC",
-                crate::data::AgentType::Clawdbot => "MB",
+                crate::data::AgentType::OpenClaw => "OC",
             };
 
             // For running sessions, show current tool + target (compact activity display)

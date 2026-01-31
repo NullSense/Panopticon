@@ -100,6 +100,9 @@ pub const MODE_ACCEPT: &str = "󰄬"; // nf-md-check (same as done)
 pub const MODE_YOLO: &str = "󱐋"; // nf-md-lightning_bolt
 
 // Permission mode ASCII fallbacks
+#[allow(dead_code)]
 pub const MODE_PLAN_ASCII: char = 'P';
+#[allow(dead_code)]
 pub const MODE_ACCEPT_ASCII: char = 'A';
+#[allow(dead_code)]
 pub const MODE_YOLO_ASCII: char = 'Y';
