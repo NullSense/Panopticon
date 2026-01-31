@@ -562,9 +562,24 @@ impl<'a> WorkstreamRowBuilder<'a> {
     fn agent_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(session) = &self.ws.agent_session {
             let cfg = agent_status_config(session.status);
+
+            // Type prefix with surface indicator for OpenClaw
             let type_prefix = match session.agent_type {
-                crate::data::AgentType::ClaudeCode => "CC",
-                crate::data::AgentType::OpenClaw => "OC",
+                crate::data::AgentType::ClaudeCode => "CC".to_string(),
+                crate::data::AgentType::OpenClaw => {
+                    // Show surface: OC/D (Discord), OC/T (TUI), OC (unknown)
+                    let surface_suffix = session
+                        .activity
+                        .surface
+                        .as_ref()
+                        .map(|s| match s.as_str() {
+                            "discord" => "/D",
+                            "webchat" => "/T",
+                            _ => "",
+                        })
+                        .unwrap_or("");
+                    format!("OC{}", surface_suffix)
+                }
             };
 
             // For running sessions, show current tool + target (compact activity display)
@@ -575,7 +590,7 @@ impl<'a> WorkstreamRowBuilder<'a> {
                         .activity
                         .current_target
                         .as_ref()
-                        .map(|t| truncate_with_ellipsis(t, width.saturating_sub(8)))
+                        .map(|t| truncate_with_ellipsis(t, width.saturating_sub(10)))
                         .unwrap_or_default();
                     format!("{}{} {}", icon, ascii, target)
                 } else {

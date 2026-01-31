@@ -1173,6 +1173,7 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
         let mut pos = self.visual_selected;
         let steps = delta.unsigned_abs() as usize;
 
@@ -1192,17 +1193,70 @@ impl App {
         }
 
         self.visual_selected = pos;
+
+        // If selection changed, refresh the newly selected workstream's agent session
+        if pos != old_pos {
+            self.refresh_selected_agent_session();
+        }
+    }
+
+    /// Force refresh the agent session for the currently selected workstream
+    ///
+    /// This provides instant updates when navigating - shows the latest
+    /// watcher state immediately instead of waiting for the next tick.
+    fn refresh_selected_agent_session(&mut self) {
+        let Some(watcher) = &self.unified_watcher else {
+            return;
+        };
+
+        // Get current workstream index
+        let ws_idx = match self.visual_items.get(self.visual_selected) {
+            Some(VisualItem::Workstream(idx)) => *idx,
+            _ => return,
+        };
+
+        let Some(ws) = self.state.workstreams.get_mut(ws_idx) else {
+            return;
+        };
+
+        // Get fresh session snapshot and update this workstream
+        let sessions = watcher.get_sessions_snapshot();
+
+        // Try to find matching session by ID or branch
+        if let Some(current) = &ws.agent_session {
+            let updated = sessions
+                .iter()
+                .find(|s| s.id == current.id)
+                .or_else(|| {
+                    current.git_branch.as_ref().and_then(|branch| {
+                        sessions.iter().find(|s| s.git_branch.as_deref() == Some(branch))
+                    })
+                });
+
+            if let Some(updated) = updated {
+                ws.agent_session = Some(updated.clone());
+            }
+        } else if let Some(pr) = &ws.github_pr {
+            // Try to link an unlinked session by PR branch
+            if let Some(session) = sessions.iter().find(|s| {
+                s.git_branch.as_deref() == Some(pr.branch.as_str())
+            }) {
+                ws.agent_session = Some(session.clone());
+            }
+        }
     }
 
     pub fn go_to_top(&mut self) {
         self.visual_selected = 0;
         self.snap_to_workstream(1);
+        self.refresh_selected_agent_session();
     }
 
     pub fn go_to_bottom(&mut self) {
         if !self.visual_items.is_empty() {
             self.visual_selected = self.visual_items.len() - 1;
             self.snap_to_workstream(-1);
+            self.refresh_selected_agent_session();
         }
     }
 
@@ -1221,15 +1275,23 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
+
         // Find next section header after current position
         for i in (self.visual_selected + 1)..len {
             if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
                 self.visual_selected = i;
+                if self.visual_selected != old_pos {
+                    self.refresh_selected_agent_session();
+                }
                 return;
             }
         }
         // If no section found, go to end
         self.visual_selected = len - 1;
+        if self.visual_selected != old_pos {
+            self.refresh_selected_agent_session();
+        }
     }
 
     /// Jump to previous section header
@@ -1238,15 +1300,23 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
+
         // Find previous section header before current position
         for i in (0..self.visual_selected).rev() {
             if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
                 self.visual_selected = i;
+                if self.visual_selected != old_pos {
+                    self.refresh_selected_agent_session();
+                }
                 return;
             }
         }
         // If no section found, go to start
         self.visual_selected = 0;
+        if self.visual_selected != old_pos {
+            self.refresh_selected_agent_session();
+        }
     }
 
     /// Scroll viewport by delta lines (vim Ctrl+e/y style)
