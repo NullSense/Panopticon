@@ -19,7 +19,9 @@ mod helpers {
             git_branch: None,
             last_output: None,
             started_at: Utc::now(),
+            last_activity: Utc::now(),
             window_id: None,
+            activity: Default::default(),
         }
     }
 
@@ -32,7 +34,9 @@ mod helpers {
             git_branch: None,
             last_output: None,
             started_at: Utc::now(),
+            last_activity: Utc::now(),
             window_id: None,
+            activity: Default::default(),
         }
     }
 }
@@ -155,7 +159,9 @@ fn test_cache_sessions_without_directory_are_ignored() {
         git_branch: None,
         last_output: None,
         started_at: chrono::Utc::now(),
+        last_activity: chrono::Utc::now(),
         window_id: None,
+        activity: Default::default(),
     };
 
     let cache = AgentSessionCache::from_sessions(vec![session_without_dir], vec![]);

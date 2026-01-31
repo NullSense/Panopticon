@@ -67,6 +67,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL encoding
 urlencoding = "2.1"
 
+# Regex for pattern matching
+regex = "1"
+
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile = "3"

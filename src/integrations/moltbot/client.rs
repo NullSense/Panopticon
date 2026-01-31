@@ -81,7 +81,9 @@ pub async fn fetch_sessions(port: Option<u16>) -> Result<Vec<AgentSession>> {
                 git_branch: None, // Moltbot doesn't track git branches yet
                 last_output: None,
                 started_at,
+                last_activity: started_at, // Moltbot doesn't provide separate last_activity
                 window_id: None,
+                activity: Default::default(), // Moltbot doesn't provide activity data
             }
         })
         .collect();

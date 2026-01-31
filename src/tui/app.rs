@@ -990,8 +990,9 @@ impl App {
 
     /// Update agent sessions in workstreams from watcher data
     ///
-    /// This updates existing agent sessions with fresh status from the watcher.
-    /// New sessions (not yet linked to a workstream) will be picked up on next full refresh.
+    /// This updates existing agent sessions with fresh data from the watcher.
+    /// Always updates activity data (tool, target, stats) for real-time display.
+    /// Only rebuilds visual items when status changes (affects sorting/grouping).
     fn update_agent_sessions_from_watcher(&mut self, sessions: &[AgentSession]) {
         // Build a map of git_branch -> session for O(1) lookup
         let session_by_branch: HashMap<&str, &AgentSession> = sessions
@@ -999,7 +1000,7 @@ impl App {
             .filter_map(|s| s.git_branch.as_deref().map(|b| (b, s)))
             .collect();
 
-        let mut any_changed = false;
+        let mut status_changed = false;
 
         // Update agent sessions in existing workstreams
         for ws in &mut self.state.workstreams {
@@ -1007,18 +1008,21 @@ impl App {
                 // Try to find updated session by git_branch
                 if let Some(branch) = &current_session.git_branch {
                     if let Some(updated) = session_by_branch.get(branch.as_str()) {
-                        // Only update if status actually changed
+                        // Track if status changed (affects sorting/grouping)
                         if current_session.status != updated.status {
-                            ws.agent_session = Some((*updated).clone());
-                            any_changed = true;
+                            status_changed = true;
                         }
+                        // Always update session to get latest activity data
+                        // (tool, target, stats, last_activity, etc.)
+                        ws.agent_session = Some((*updated).clone());
                     }
                 }
             }
         }
 
-        // Only rebuild visual items if something changed
-        if any_changed {
+        // Only rebuild visual items if status changed (affects section grouping)
+        // Activity-only changes don't need rebuild - they'll show on next render
+        if status_changed {
             self.rebuild_visual_items();
         }
     }

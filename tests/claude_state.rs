@@ -22,6 +22,7 @@ mod state_behavior {
                 git_branch: None,
                 status: "done".to_string(),
                 last_active: chrono::Utc::now().timestamp(),
+                activity: Default::default(),
             },
         );
 
@@ -45,6 +46,7 @@ mod state_behavior {
                 git_branch: None,
                 status: "running".to_string(),
                 last_active: chrono::Utc::now().timestamp(),
+                activity: Default::default(),
             },
         );
 
@@ -70,6 +72,7 @@ mod state_behavior {
                 git_branch: None,
                 status: "stop".to_string(), // If "stop" somehow gets stored
                 last_active: chrono::Utc::now().timestamp(),
+                activity: Default::default(),
             },
         );
 
@@ -106,6 +109,7 @@ mod state_behavior {
                     git_branch: None,
                     status: status_str.to_string(),
                     last_active: chrono::Utc::now().timestamp(),
+                    activity: Default::default(),
                 },
             );
 

@@ -69,7 +69,10 @@ pub async fn fetch_workstreams(config: &Config) -> Result<Vec<Workstream>> {
 
         // Find agent session via O(1) cache lookup by git branch
         // Linear's working_directory is the branch name, match against session's git_branch
-        let agent = agent_cache.find_for_branch(issue.working_directory.as_deref());
+        let agent = agent_cache.find_for_branch_or_identifier(
+            issue.working_directory.as_deref(),
+            &issue.issue.identifier,
+        );
 
         workstreams.push(Workstream {
             linear_issue: issue.issue,
@@ -224,7 +227,10 @@ pub async fn fetch_workstreams_incremental(
                 };
 
                 // Find agent session via O(1) cache lookup by git branch
-                let agent = agent_cache.find_for_branch(issue.working_directory.as_deref());
+                let agent = agent_cache.find_for_branch_or_identifier(
+            issue.working_directory.as_deref(),
+            &issue.issue.identifier,
+        );
 
                 // Track matched session ID
                 if let Some(ref session) = agent {

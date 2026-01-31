@@ -40,17 +40,26 @@ async fn main() -> Result<()> {
 
     // Handle internal-hook command first (before logging setup for speed)
     if let Some(Command::InternalHook { event }) = &args.command {
-        // Get session info from environment (Claude passes this)
-        let session_id = std::env::var("CLAUDE_SESSION_ID")
-            .or_else(|_| std::env::var("SESSION_ID"))
-            .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+        // Parse rich input from stdin (Claude Code sends JSON)
+        let hook_input = integrations::claude::hook_input::HookInput::from_stdin();
 
-        let cwd = std::env::var("PWD")
-            .or_else(|_| std::env::current_dir().map(|p| p.to_string_lossy().to_string()))
+        // Get session info from environment or stdin
+        let session_id = hook_input
+            .as_ref()
+            .and_then(|i| i.session_id.clone())
+            .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok())
+            .or_else(|| std::env::var("SESSION_ID").ok())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let cwd = hook_input
+            .as_ref()
+            .and_then(|i| i.cwd.clone())
+            .or_else(|| std::env::var("PWD").ok())
+            .or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().to_string()).ok())
             .unwrap_or_default();
 
         // Quick write to state file and exit
-        integrations::claude::handle_hook(event, &session_id, &cwd)?;
+        integrations::claude::handle_hook(event, &session_id, &cwd, hook_input.as_ref())?;
         return Ok(());
     }
 

@@ -332,6 +332,36 @@ impl VercelStatus {
     }
 }
 
+/// Activity statistics for an agent session
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentActivityStats {
+    pub files_read: u32,
+    pub files_edited: u32,
+    pub files_written: u32,
+    pub commands_run: u32,
+}
+
+/// Rich activity info for display
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentActivity {
+    /// Current tool (None = thinking)
+    pub current_tool: Option<String>,
+    /// Target of current tool (file path, command, etc.)
+    pub current_target: Option<String>,
+    /// Last prompt snippet
+    pub last_prompt: Option<String>,
+    /// Model short name (sonnet/opus/haiku)
+    pub model_short: Option<String>,
+    /// Permission mode (plan, acceptEdits, etc.)
+    pub permission_mode: Option<String>,
+    /// Activity stats
+    pub stats: AgentActivityStats,
+    /// Active subagent count
+    pub subagent_count: u32,
+    /// Last error
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSession {
     pub id: String,
@@ -341,7 +371,13 @@ pub struct AgentSession {
     pub git_branch: Option<String>,
     pub last_output: Option<String>,
     pub started_at: DateTime<Utc>,
-    pub window_id: Option<String>, // For teleporting
+    /// Last activity timestamp (for detecting idle vs thinking)
+    #[serde(default = "Utc::now")]
+    pub last_activity: DateTime<Utc>,
+    pub window_id: Option<String>,
+    /// Rich activity data for display
+    #[serde(default)]
+    pub activity: AgentActivity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

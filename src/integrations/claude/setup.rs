@@ -109,31 +109,51 @@ pub fn generate_hook_entry(event: &str) -> Value {
     })
 }
 
-/// Add panopticon hook to a hooks object if not already present
+/// Add panopticon hook to a hooks object, replacing any existing panopticon hook
 pub fn add_panopticon_hook(hooks: &mut Value, hook_type: &str, event: &str) {
     let hook_entry = generate_hook_entry(event);
+    let expected_command = format!("panopticon internal-hook --event {}", event);
 
     if let Some(existing) = hooks.get_mut(hook_type) {
         if let Some(arr) = existing.as_array_mut() {
-            // Check if already present (check both old and new formats)
-            let already_present = arr.iter().any(|h| {
+            // Remove any existing panopticon hooks (might have wrong event)
+            arr.retain(|h| {
                 // Check new format
                 if let Some(hook_arr) = h.get("hooks").and_then(|h| h.as_array()) {
-                    return hook_arr.iter().any(|inner| {
+                    let is_panopticon = hook_arr.iter().any(|inner| {
                         inner
                             .get("command")
                             .and_then(|c| c.as_str())
                             .map(|s| s.contains("panopticon"))
                             .unwrap_or(false)
                     });
+                    return !is_panopticon;
                 }
-                // Check old format for backwards compatibility detection
-                h.get("commands")
+                // Check old format
+                let is_panopticon = h
+                    .get("commands")
                     .and_then(|c| c.as_str())
                     .map(|s| s.contains("panopticon"))
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                !is_panopticon
             });
-            if !already_present {
+
+            // Check if correct hook already exists after cleanup
+            let has_correct = arr.iter().any(|h| {
+                if let Some(hook_arr) = h.get("hooks").and_then(|h| h.as_array()) {
+                    hook_arr.iter().any(|inner| {
+                        inner
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s == expected_command)
+                            .unwrap_or(false)
+                    })
+                } else {
+                    false
+                }
+            });
+
+            if !has_correct {
                 arr.push(hook_entry);
             }
         } else {
@@ -201,9 +221,19 @@ pub fn inject_hooks_to_path(settings_path: &Path) -> Result<()> {
 
     // Add our hooks
     if let Some(hooks) = settings.get_mut("hooks") {
+        // Session lifecycle
         add_panopticon_hook(hooks, "SessionStart", "start");
-        add_panopticon_hook(hooks, "UserPromptSubmit", "active");
+        add_panopticon_hook(hooks, "UserPromptSubmit", "prompt");
         add_panopticon_hook(hooks, "Stop", "stop");
+
+        // Tool execution (for rich activity tracking)
+        add_panopticon_hook(hooks, "PreToolUse", "tool_start");
+        add_panopticon_hook(hooks, "PostToolUse", "tool_done");
+        add_panopticon_hook(hooks, "PostToolUseFailure", "tool_fail");
+
+        // Subagent tracking
+        add_panopticon_hook(hooks, "SubagentStart", "subagent_start");
+        add_panopticon_hook(hooks, "SubagentStop", "subagent_stop");
     }
 
     // Validate final settings before writing
@@ -228,10 +258,74 @@ pub fn inject_hooks() -> Result<()> {
     inject_hooks_to_path(&path)
 }
 
+/// Check if all required hooks are present with correct events
+fn all_hooks_present(settings: &Value) -> bool {
+    let required_hooks = [
+        ("SessionStart", "start"),
+        ("UserPromptSubmit", "prompt"),
+        ("Stop", "stop"),
+        ("PreToolUse", "tool_start"),
+        ("PostToolUse", "tool_done"),
+        ("PostToolUseFailure", "tool_fail"),
+        ("SubagentStart", "subagent_start"),
+        ("SubagentStop", "subagent_stop"),
+    ];
+
+    let Some(hooks) = settings.get("hooks") else {
+        return false;
+    };
+
+    for (hook_type, event) in required_hooks {
+        let Some(hook_arr) = hooks.get(hook_type).and_then(|h| h.as_array()) else {
+            return false;
+        };
+
+        // Check if panopticon hook with correct event exists
+        let has_correct_hook = hook_arr.iter().any(|h| {
+            if let Some(inner_hooks) = h.get("hooks").and_then(|h| h.as_array()) {
+                inner_hooks.iter().any(|inner| {
+                    inner
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|s| {
+                            s.contains("panopticon")
+                                && s.contains(&format!("--event {}", event))
+                        })
+                        .unwrap_or(false)
+                })
+            } else {
+                false
+            }
+        });
+
+        if !has_correct_hook {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Ensure hooks are installed (called on startup)
 pub fn ensure_hooks() -> Result<()> {
-    if !hooks_installed() {
+    let path = match claude_settings_path() {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    if !path.exists() {
+        inject_hooks()?;
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let settings: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+
+    // Re-inject if any hooks are missing or have wrong events
+    if !all_hooks_present(&settings) {
+        tracing::info!("Updating Claude hooks (missing or outdated hooks detected)");
         inject_hooks()?;
     }
+
     Ok(())
 }

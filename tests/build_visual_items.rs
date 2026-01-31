@@ -58,7 +58,9 @@ fn make_workstream_with_agent(
         git_branch: None,
         last_output: None,
         started_at: Utc::now(),
+        last_activity: Utc::now(),
         window_id: None,
+        activity: Default::default(),
     });
     ws
 }
