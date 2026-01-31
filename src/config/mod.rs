@@ -286,7 +286,8 @@ fn default_sort_mode() -> String {
 }
 
 fn default_column_widths() -> [usize; 8] {
-    [1, 3, 10, 26, 12, 10, 3, 6]
+    // Status, Priority, ID, Title, PR, Agent, Vercel, Time
+    [1, 3, 10, 26, 12, 20, 3, 6]
 }
 
 // =============================================================================

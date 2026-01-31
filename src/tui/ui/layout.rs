@@ -18,7 +18,7 @@ pub const PREFIX_WIDTH: usize = 2;
 pub const SEP: &str = " │ ";
 pub const SEP_WIDTH: usize = 3;
 
-pub const COL_MIN_WIDTHS: [usize; NUM_COLUMNS] = [1, 3, 6, 12, 8, 8, 3, 6];
+pub const COL_MIN_WIDTHS: [usize; NUM_COLUMNS] = [1, 3, 6, 12, 8, 14, 3, 6];
 pub const COL_HIDE_ORDER: [usize; 6] = [
     COL_IDX_TIME,
     COL_IDX_VERCEL,

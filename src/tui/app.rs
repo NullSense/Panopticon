@@ -1,10 +1,11 @@
 use crate::config::Config;
 use crate::data::{
-    AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SectionType, SortMode,
-    VisualItem, Workstream,
+    AgentSession, AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus,
+    SectionType, SortMode, VisualItem, Workstream,
 };
 use crate::integrations;
 use crate::integrations::cache;
+use crate::integrations::claude::watcher::ClaudeWatcher;
 use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
@@ -160,6 +161,8 @@ pub struct App {
     shadow_metadata: Option<RefreshMetadata>,
     /// Timestamp when refresh started (for timeout detection)
     refresh_started_at: Option<Instant>,
+    /// File watcher for real-time Claude session updates
+    claude_watcher: Option<ClaudeWatcher>,
 }
 
 // Modal state accessors (backward-compatible interface)
@@ -254,6 +257,7 @@ impl App {
             shadow_workstreams: Vec::new(),
             shadow_metadata: None,
             refresh_started_at: None,
+            claude_watcher: ClaudeWatcher::new().ok(),
         };
 
         app.load_cached_state();
@@ -866,7 +870,7 @@ impl App {
         self.column_widths[COL_IDX_ID] = max_id_len + 1 + sub_issue_padding;
         self.column_widths[COL_IDX_TITLE] = max_title_len.min(40); // Cap title at 40
         self.column_widths[COL_IDX_PR] = max_pr_len.min(15);
-        self.column_widths[COL_IDX_AGENT] = max_agent_len.min(12);
+        self.column_widths[COL_IDX_AGENT] = max_agent_len.min(24);
 
         // Status, Priority, Vercel, and Time have fixed widths
         // (already set in defaults, no need to recalculate)
@@ -884,12 +888,12 @@ impl App {
         let available = (terminal_width as usize).saturating_sub(fixed_widths);
 
         // Distribute remaining space to ID, Title, PR, Agent
-        // Title gets 50%, ID gets 20%, PR gets 15%, Agent gets 15%
+        // Title gets 45%, Agent gets 25%, ID gets 15%, PR gets 15%
         if available > 40 {
-            let title_width = (available * 50 / 100).clamp(15, 50);
-            let id_width = (available * 20 / 100).clamp(6, 15);
+            let title_width = (available * 45 / 100).clamp(15, 50);
+            let agent_width = (available * 25 / 100).clamp(12, 28);
+            let id_width = (available * 15 / 100).clamp(6, 15);
             let pr_width = (available * 15 / 100).clamp(8, 15);
-            let agent_width = (available * 15 / 100).clamp(8, 12);
 
             self.column_widths[COL_IDX_ID] = id_width;
             self.column_widths[COL_IDX_TITLE] = title_width;
@@ -943,6 +947,60 @@ impl App {
                     self.start_background_refresh();
                 }
             }
+        }
+    }
+
+    /// Poll file watcher for Claude session changes (real-time updates)
+    ///
+    /// This is much more efficient than polling - it only updates when the
+    /// file actually changes, using OS-level file system notifications (inotify on Linux).
+    pub fn poll_claude_watcher(&mut self) -> bool {
+        let Some(watcher) = &self.claude_watcher else {
+            return false;
+        };
+
+        if !watcher.poll() {
+            return false;
+        }
+
+        // File changed - update agent sessions in workstreams
+        let sessions = watcher.get_sessions_snapshot();
+        self.update_agent_sessions_from_watcher(&sessions);
+        true
+    }
+
+    /// Update agent sessions in workstreams from watcher data
+    ///
+    /// This updates existing agent sessions with fresh status from the watcher.
+    /// New sessions (not yet linked to a workstream) will be picked up on next full refresh.
+    fn update_agent_sessions_from_watcher(&mut self, sessions: &[AgentSession]) {
+        // Build a map of git_branch -> session for O(1) lookup
+        let session_by_branch: HashMap<&str, &AgentSession> = sessions
+            .iter()
+            .filter_map(|s| s.git_branch.as_deref().map(|b| (b, s)))
+            .collect();
+
+        let mut any_changed = false;
+
+        // Update agent sessions in existing workstreams
+        for ws in &mut self.state.workstreams {
+            if let Some(current_session) = &ws.agent_session {
+                // Try to find updated session by git_branch
+                if let Some(branch) = &current_session.git_branch {
+                    if let Some(updated) = session_by_branch.get(branch.as_str()) {
+                        // Only update if status actually changed
+                        if current_session.status != updated.status {
+                            ws.agent_session = Some((*updated).clone());
+                            any_changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Only rebuild visual items if something changed
+        if any_changed {
+            self.rebuild_visual_items();
         }
     }
 

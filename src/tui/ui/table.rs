@@ -3,7 +3,7 @@
 use super::icons;
 use super::layout::{
     compute_column_layout, display_width, pad_to_width, title_column_offset, truncate_with_ellipsis,
-    ColumnLayout, PREFIX, PREFIX_WIDTH, SEP,
+    ColumnLayout, PREFIX, SEP,
 };
 use super::status::{agent_status_config, linear_status_config, pr_status_config, priority_config, vercel_status_config};
 use crate::data::{AgentStatus, SectionType, VisualItem};
@@ -249,7 +249,7 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
                 );
                 let base_style = style.add_modifier(Modifier::BOLD);
                 let final_style = if is_selected {
-                    base_style.bg(Color::DarkGray)
+                    base_style.bg(Color::Rgb(30, 40, 60)) // Match row selection color
                 } else {
                     base_style
                 };
@@ -303,6 +303,46 @@ fn header_label(icon: &str, label: &str) -> String {
     }
 }
 
+/// Shorten a file path for display
+/// Replaces home directory with ~ and truncates if needed
+fn shorten_path(path: &str) -> String {
+    let shortened = if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if path.starts_with(home_str.as_ref()) {
+            path.replacen(home_str.as_ref(), "~", 1)
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    // If still too long, show just the last component
+    if shortened.len() > 40 {
+        std::path::Path::new(path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or(shortened)
+    } else {
+        shortened
+    }
+}
+
+/// Remap DarkGray foreground to Gray for visibility on dark backgrounds
+fn remap_dark_gray_to_gray(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    spans
+        .into_iter()
+        .map(|span| {
+            if span.style.fg == Some(Color::DarkGray) {
+                let new_style = span.style.fg(Color::Gray);
+                Span::styled(span.content, new_style)
+            } else {
+                span
+            }
+        })
+        .collect()
+}
+
 fn build_workstream_row(
     ws: &crate::data::Workstream,
     selected: bool,
@@ -335,13 +375,26 @@ impl<'a> WorkstreamRowBuilder<'a> {
     }
 
     fn build(self, selected: bool) -> ListItem<'static> {
-        let mut lines = vec![Line::from(self.build_spans())];
-        if let Some(status_line) = self.agent_status_line() {
-            lines.push(status_line);
+        let main_spans = self.build_spans();
+        // When selected, remap DarkGray text to Gray for visibility on DarkGray background
+        let main_spans = if selected {
+            remap_dark_gray_to_gray(main_spans)
+        } else {
+            main_spans
+        };
+        let mut lines = vec![Line::from(main_spans)];
+
+        // Only show expanded agent detail panel when row is selected
+        if selected {
+            for detail_line in self.agent_detail_lines() {
+                // Remap DarkGray to Gray for visibility on selection background
+                let adjusted_line = Line::from(remap_dark_gray_to_gray(detail_line.spans));
+                lines.push(adjusted_line);
+            }
         }
         let style = if selected {
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(Color::Rgb(30, 40, 60)) // Dark blue-gray for better visibility
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -514,12 +567,49 @@ impl<'a> WorkstreamRowBuilder<'a> {
     fn agent_span(&self, width: usize) -> Span<'static> {
         let (text, style) = if let Some(session) = &self.ws.agent_session {
             let cfg = agent_status_config(session.status);
-            let (icon, ascii, label) = agent_badge(session.status);
             let type_prefix = match session.agent_type {
                 crate::data::AgentType::ClaudeCode => "CC",
                 crate::data::AgentType::Clawdbot => "MB",
             };
-            let text = format!("{} {}{} {}", type_prefix, icon, ascii, label);
+
+            // For running sessions, show current tool + target (compact activity display)
+            let activity_text = if session.status == AgentStatus::Running {
+                if let Some(tool) = &session.activity.current_tool {
+                    let (icon, ascii) = tool_badge(tool);
+                    let target = session
+                        .activity
+                        .current_target
+                        .as_ref()
+                        .map(|t| truncate_with_ellipsis(t, width.saturating_sub(8)))
+                        .unwrap_or_default();
+                    format!("{}{} {}", icon, ascii, target)
+                } else {
+                    // No tool - check if we've been idle for a while (3+ seconds)
+                    let seconds_since_activity =
+                        chrono::Utc::now().signed_duration_since(session.last_activity);
+                    if seconds_since_activity.num_seconds() > 3 {
+                        // Been a while with no tool = effectively idle
+                        format!(
+                            "{}{} Idle",
+                            icons::AGENT_IDLE,
+                            icons::AGENT_IDLE_ASCII
+                        )
+                    } else {
+                        // Recent activity, no tool = thinking between steps
+                        format!(
+                            "{}{} Thinking",
+                            icons::THINKING,
+                            icons::THINKING_ASCII
+                        )
+                    }
+                }
+            } else {
+                // Non-running: show status badge
+                let (icon, ascii, label) = agent_badge(session.status);
+                format!("{}{} {}", icon, ascii, label)
+            };
+
+            let text = format!("{} {}", type_prefix, activity_text);
             (pad_to_width(&text, width, Alignment::Left), cfg.style)
         } else {
             (
@@ -572,34 +662,230 @@ impl<'a> WorkstreamRowBuilder<'a> {
         )
     }
 
-    fn agent_status_line(&self) -> Option<Line<'static>> {
-        let session = self.ws.agent_session.as_ref()?;
-        let output = session.last_output.as_deref()?;
-        let snippet = output.lines().find(|line| !line.trim().is_empty())?.trim();
-        if snippet.is_empty() {
-            return None;
+    /// Render expanded agent detail panel (multiple lines shown when row is selected)
+    ///
+    /// Returns 3-4 lines showing:
+    /// - Line 1: Model, mode, status
+    /// - Line 2: Current tool + full target path
+    /// - Line 3: Stats and subagents
+    /// - Line 4: Last prompt (if available)
+    /// - Line 5: Error (if any)
+    fn agent_detail_lines(&self) -> Vec<Line<'static>> {
+        let session = match self.ws.agent_session.as_ref() {
+            Some(s) => s,
+            None => return vec![],
+        };
+        let activity = &session.activity;
+
+        let indent = title_column_offset(self.layout);
+        let indent_str = " ".repeat(indent);
+        let border_style = Style::default().fg(Color::DarkGray);
+        let label_style = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+
+        let mut lines = Vec::new();
+
+        // ─── Line 1: Header with model, mode, status ───
+        let mut header_spans = vec![
+            Span::raw(indent_str.clone()),
+            Span::styled("├─ ", border_style),
+        ];
+
+        // Model
+        if let Some(model) = &activity.model_short {
+            header_spans.push(Span::styled("Model: ", label_style));
+            header_spans.push(Span::styled(
+                model.clone(),
+                Style::default().fg(Color::Magenta),
+            ));
+            header_spans.push(Span::styled(" │ ", border_style));
         }
 
-        let (icon, ascii, label) = agent_badge(session.status);
-        let type_prefix = match session.agent_type {
-            crate::data::AgentType::ClaudeCode => "CC",
-            crate::data::AgentType::Clawdbot => "MB",
-        };
-        let prefix_text = format!("{} {}{} {}", type_prefix, icon, ascii, label);
-        let indent = title_column_offset(self.layout);
-        let max_width = (self.layout.row_body_width + PREFIX_WIDTH).saturating_sub(indent);
-        let snippet_width = max_width
-            .saturating_sub(display_width(&prefix_text))
-            .saturating_sub(3);
-        let snippet = truncate_with_ellipsis(snippet, snippet_width);
+        // Permission mode - colors match Claude Code's actual mode indicators
+        if let Some(mode) = &activity.permission_mode {
+            let (mode_icon, mode_label, color) = match mode.as_str() {
+                "plan" => (icons::MODE_PLAN, "plan", Color::Magenta),
+                "acceptEdits" => (icons::MODE_ACCEPT, "accept", Color::Green),
+                "bypassPermissions" => (icons::MODE_YOLO, "yolo", Color::Rgb(255, 140, 0)),
+                "default" => ("", "default", Color::Gray),
+                _ => ("", mode.as_str(), Color::Gray),
+            };
+            header_spans.push(Span::styled("Mode: ", label_style));
+            header_spans.push(Span::styled(
+                format!("{} {}", mode_icon, mode_label),
+                Style::default().fg(color),
+            ));
+            header_spans.push(Span::styled(" │ ", border_style));
+        }
 
-        let spans = vec![
-            Span::raw(" ".repeat(indent)),
-            Span::styled(prefix_text, agent_status_config(session.status).style),
-            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
-            Span::styled(snippet, Style::default().fg(Color::DarkGray)),
+        // Status (must match agent_span logic)
+        header_spans.push(Span::styled("Status: ", label_style));
+        let (status_text, status_color) = if session.status == AgentStatus::Running {
+            if activity.current_tool.is_some() {
+                ("Running", Color::Cyan)
+            } else {
+                let seconds_since = chrono::Utc::now().signed_duration_since(session.last_activity);
+                if seconds_since.num_seconds() > 3 {
+                    ("Idle", Color::DarkGray)
+                } else {
+                    ("Thinking", Color::Cyan)
+                }
+            }
+        } else {
+            match session.status {
+                AgentStatus::Idle => ("Idle", Color::DarkGray),
+                AgentStatus::WaitingForInput => ("Waiting", Color::Yellow),
+                AgentStatus::Done => ("Done", Color::Green),
+                AgentStatus::Error => ("Error", Color::Red),
+                AgentStatus::Running => ("Running", Color::Cyan),
+            }
+        };
+        header_spans.push(Span::styled(
+            status_text.to_string(),
+            Style::default().fg(status_color),
+        ));
+
+        lines.push(Line::from(header_spans));
+
+        // ─── Line 2: Current tool + target ───
+        let mut tool_spans = vec![
+            Span::raw(indent_str.clone()),
+            Span::styled("│  ", border_style),
         ];
-        Some(Line::from(spans))
+
+        if let Some(tool) = &activity.current_tool {
+            let (icon, _ascii) = tool_badge(tool);
+            tool_spans.push(Span::styled("Tool: ", label_style));
+            tool_spans.push(Span::styled(
+                format!("{} {}", icon, tool),
+                Style::default().fg(Color::Cyan),
+            ));
+            if let Some(target) = &activity.current_target {
+                tool_spans.push(Span::styled(" → ", border_style));
+                tool_spans.push(Span::styled(
+                    truncate_with_ellipsis(target, 60),
+                    value_style,
+                ));
+            }
+        } else {
+            // Show working directory when no tool
+            if let Some(dir) = &session.working_directory {
+                tool_spans.push(Span::styled("Dir: ", label_style));
+                tool_spans.push(Span::styled(
+                    shorten_path(dir),
+                    value_style,
+                ));
+            }
+            if let Some(branch) = &session.git_branch {
+                tool_spans.push(Span::styled(" (", border_style));
+                tool_spans.push(Span::styled(
+                    truncate_with_ellipsis(branch, 30),
+                    Style::default().fg(Color::Blue),
+                ));
+                tool_spans.push(Span::styled(")", border_style));
+            }
+        }
+
+        lines.push(Line::from(tool_spans));
+
+        // ─── Line 3: Stats and subagents ───
+        let stats = &activity.stats;
+        let total_stats =
+            stats.files_read + stats.files_edited + stats.files_written + stats.commands_run;
+
+        if total_stats > 0 || activity.subagent_count > 0 {
+            let mut stats_spans = vec![
+                Span::raw(indent_str.clone()),
+                Span::styled("│  ", border_style),
+            ];
+
+            if total_stats > 0 {
+                stats_spans.push(Span::styled("Stats: ", label_style));
+                if stats.files_read > 0 {
+                    stats_spans.push(Span::styled(
+                        format!("{} reads", stats.files_read),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    stats_spans.push(Span::styled(" │ ", border_style));
+                }
+                if stats.files_edited > 0 {
+                    stats_spans.push(Span::styled(
+                        format!("{} edits", stats.files_edited),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                    stats_spans.push(Span::styled(" │ ", border_style));
+                }
+                if stats.files_written > 0 {
+                    stats_spans.push(Span::styled(
+                        format!("{} writes", stats.files_written),
+                        Style::default().fg(Color::Green),
+                    ));
+                    stats_spans.push(Span::styled(" │ ", border_style));
+                }
+                if stats.commands_run > 0 {
+                    stats_spans.push(Span::styled(
+                        format!("{} cmds", stats.commands_run),
+                        Style::default().fg(Color::Magenta),
+                    ));
+                }
+            }
+
+            if activity.subagent_count > 0 {
+                if total_stats > 0 {
+                    stats_spans.push(Span::styled(" │ ", border_style));
+                }
+                stats_spans.push(Span::styled(
+                    format!("{} {} subagents", icons::TOOL_TASK, activity.subagent_count),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
+            lines.push(Line::from(stats_spans));
+        }
+
+        // ─── Line 4: Last prompt ───
+        if let Some(prompt) = &activity.last_prompt {
+            let prompt_spans = vec![
+                Span::raw(indent_str.clone()),
+                Span::styled("│  ", border_style),
+                Span::styled("Prompt: ", label_style),
+                Span::styled(
+                    format!("\"{}\"", truncate_with_ellipsis(prompt, 70)),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ];
+            lines.push(Line::from(prompt_spans));
+        }
+
+        // ─── Line 5: Error (if any) ───
+        if let Some(error) = &activity.last_error {
+            let error_spans = vec![
+                Span::raw(indent_str.clone()),
+                Span::styled("│  ", border_style),
+                Span::styled(
+                    format!("{} Error: ", icons::AGENT_ERROR),
+                    Style::default().fg(Color::Red),
+                ),
+                Span::styled(
+                    truncate_with_ellipsis(error, 60),
+                    Style::default().fg(Color::Red),
+                ),
+            ];
+            lines.push(Line::from(error_spans));
+        }
+
+        // ─── Footer line ───
+        if !lines.is_empty() {
+            let footer_spans = vec![
+                Span::raw(indent_str),
+                Span::styled("└──────────────────────────────────────────────────", border_style),
+            ];
+            lines.push(Line::from(footer_spans));
+        }
+
+        lines
     }
 }
 
@@ -610,6 +896,21 @@ fn agent_badge(status: AgentStatus) -> (&'static str, char, &'static str) {
         AgentStatus::WaitingForInput => (icons::AGENT_WAITING, icons::AGENT_WAITING_ASCII, "WAIT"),
         AgentStatus::Done => (icons::AGENT_DONE, icons::AGENT_DONE_ASCII, "DONE"),
         AgentStatus::Error => (icons::AGENT_ERROR, icons::AGENT_ERROR_ASCII, "ERR"),
+    }
+}
+
+/// Get icon and ASCII fallback for a tool name
+fn tool_badge(tool_name: &str) -> (&'static str, char) {
+    match tool_name {
+        "Read" => (icons::TOOL_READ, icons::TOOL_READ_ASCII),
+        "Edit" => (icons::TOOL_EDIT, icons::TOOL_EDIT_ASCII),
+        "Write" => (icons::TOOL_WRITE, icons::TOOL_WRITE_ASCII),
+        "Bash" => (icons::TOOL_BASH, icons::TOOL_BASH_ASCII),
+        "Grep" => (icons::TOOL_GREP, icons::TOOL_GREP_ASCII),
+        "Glob" => (icons::TOOL_GLOB, icons::TOOL_GLOB_ASCII),
+        "WebFetch" | "WebSearch" => (icons::TOOL_WEB, icons::TOOL_WEB_ASCII),
+        "Task" => (icons::TOOL_TASK, icons::TOOL_TASK_ASCII),
+        _ => (icons::THINKING, icons::THINKING_ASCII),
     }
 }
 
