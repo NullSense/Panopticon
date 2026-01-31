@@ -1501,29 +1501,8 @@ impl App {
                 .collect()
         };
 
-        // Sort filtered children (same logic as UI)
-        self.sort_children(filtered)
-    }
-
-    /// Sort children by current sort mode
-    /// NOTE: This must match the sorting logic in ui.rs:sort_filtered_children
-    fn sort_children<'a>(&self, mut children: Vec<&'a LinearChildRef>) -> Vec<&'a LinearChildRef> {
-        match self.state.sort_mode {
-            SortMode::ByLinearStatus => {
-                children.sort_by_key(|c| c.status.sort_order());
-            }
-            SortMode::ByPriority => {
-                children.sort_by_key(|c| c.priority.sort_order());
-            }
-            // Children don't have these fields, sort by status as fallback (matches UI)
-            SortMode::ByAgentStatus
-            | SortMode::ByVercelStatus
-            | SortMode::ByPRActivity
-            | SortMode::ByLastUpdated => {
-                children.sort_by_key(|c| c.status.sort_order());
-            }
-        }
-        children
+        // Sort filtered children using shared sorting logic
+        crate::data::sort_children(filtered, self.state.sort_mode)
     }
 
     /// Navigate to selected child issue in modal

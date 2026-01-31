@@ -3,7 +3,7 @@ use super::search::FuzzySearch;
 use super::App;
 use crate::data::{
     AgentStatus, GitHubPRStatus, LinearChildRef, LinearPriority, LinearStatus, SectionType,
-    SortMode, VercelStatus, VisualItem,
+    VercelStatus, VisualItem,
 };
 use pulldown_cmark::{Event, Parser, Tag};
 use ratatui::{
@@ -1791,7 +1791,7 @@ fn draw_link_menu(f: &mut Frame, app: &App) {
             };
 
             // Sort filtered children according to current sort mode
-            let sorted_children = sort_filtered_children(filtered_children, app.state.sort_mode);
+            let sorted_children = sort_children(filtered_children, app.state.sort_mode);
             let total_children = sorted_children.len();
             let visible_height: usize = inner.height.saturating_sub(12) as usize;
             let visible_height = visible_height.clamp(3, 10);
@@ -2379,27 +2379,8 @@ fn parse_markdown_to_lines(markdown: &str, max_width: usize) -> Vec<Line<'static
 
 /// Sort children by the current sort mode (inheriting from main view)
 /// Sort children list (pre-filtered or full)
-fn sort_filtered_children(
-    mut children: Vec<&LinearChildRef>,
-    sort_mode: SortMode,
-) -> Vec<&LinearChildRef> {
-    match sort_mode {
-        SortMode::ByLinearStatus => {
-            children.sort_by_key(|c| c.status.sort_order());
-        }
-        SortMode::ByPriority => {
-            children.sort_by_key(|c| c.priority.sort_order());
-        }
-        SortMode::ByAgentStatus
-        | SortMode::ByVercelStatus
-        | SortMode::ByPRActivity
-        | SortMode::ByLastUpdated => {
-            // Children don't have these fields, sort by status as fallback
-            children.sort_by_key(|c| c.status.sort_order());
-        }
-    }
-    children
-}
+// Use shared sorting logic from data module
+use crate::data::sort_children;
 
 /// Truncate a string to max length, adding ellipsis if needed
 fn truncate_str(s: &str, max_len: usize) -> String {

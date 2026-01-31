@@ -1,3 +1,7 @@
+mod sorting;
+
+pub use sorting::sort_children;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
