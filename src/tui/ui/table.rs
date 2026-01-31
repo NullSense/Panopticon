@@ -197,9 +197,14 @@ pub fn draw_workstreams(f: &mut Frame, app: &App, area: Rect) {
 
     items.push(ListItem::new(Line::from(header_spans)));
 
+    // Use cached separator pattern (avoid allocation every frame)
+    static SEPARATOR_CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let max_width = 200; // Max reasonable terminal width
+    let separator_str = SEPARATOR_CACHE.get_or_init(|| "─".repeat(max_width));
+    let separator_slice = &separator_str[..separator_str.len().min(layout.row_body_width * 3)]; // UTF-8 safe slice
     let separator_line = Line::from(vec![
         Span::raw(PREFIX),
-        Span::styled("─".repeat(layout.row_body_width), sep_style),
+        Span::styled(separator_slice.to_string(), sep_style),
     ]);
     items.push(ListItem::new(separator_line));
 
