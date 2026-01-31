@@ -748,19 +748,47 @@ impl App {
                     }
                 }
                 RefreshResult::Workstream(ws) => {
-                    // Add to shadow storage, not main data
-                    self.shadow_workstreams.push(*ws);
+                    // Track in shadow for final reconciliation
+                    self.shadow_workstreams.push(*ws.clone());
+
+                    // ALSO add/update in main state immediately for real-time display
+                    // Find existing workstream by issue ID and update, or append if new
+                    let issue_id = &ws.linear_issue.id;
+                    if let Some(existing) = self.state.workstreams.iter_mut()
+                        .find(|w| w.linear_issue.id == *issue_id)
+                    {
+                        *existing = *ws;
+                    } else {
+                        self.state.workstreams.push(*ws);
+                    }
+
                     // Monotonic progress: always derived from received count
                     if let Some(ref mut p) = self.refresh_progress {
                         p.completed = self.shadow_workstreams.len();
+                    }
+
+                    // Throttled UI rebuild: only every 10 items to avoid performance hit
+                    if self.shadow_workstreams.len() % 10 == 0 {
+                        self.apply_filters();
+                        self.rebuild_visual_items();
                     }
                 }
                 RefreshResult::Metadata(metadata) => {
                     self.shadow_metadata = Some(metadata);
                 }
                 RefreshResult::Complete => {
-                    // Success: swap shadow with main data
-                    std::mem::swap(&mut self.state.workstreams, &mut self.shadow_workstreams);
+                    // Success: reconcile main with shadow (remove stale items not in new set)
+                    // Since we've been adding incrementally, main may have old items that
+                    // were deleted from Linear. Remove any not present in shadow.
+                    let shadow_ids: HashSet<&str> = self.shadow_workstreams
+                        .iter()
+                        .map(|ws| ws.linear_issue.id.as_str())
+                        .collect();
+                    self.state.workstreams.retain(|ws| {
+                        // Keep if in shadow (was refreshed) or has no ID (unlinked agent session)
+                        shadow_ids.contains(ws.linear_issue.id.as_str())
+                            || ws.linear_issue.id.is_empty()
+                    });
                     self.shadow_workstreams.clear();
 
                     if let Some(metadata) = self.shadow_metadata.take() {
