@@ -1,12 +1,20 @@
 use crate::config::Config;
 use crate::data::{VercelDeployment, VercelStatus};
+use crate::integrations::enrichment_cache::{AsyncTtlCache, Cached};
 use crate::integrations::HTTP_CLIENT;
 use anyhow::Result;
 use chrono::Utc;
+use once_cell::sync::Lazy;
+use std::time::Duration;
 
 const VERCEL_API_URL: &str = "https://api.vercel.com";
 
-/// Fetch the latest deployment for a given branch
+static DEPLOYMENT_CACHE: Lazy<AsyncTtlCache<String, Cached<Option<VercelDeployment>>>> =
+    Lazy::new(AsyncTtlCache::default);
+
+/// Fetch the latest deployment for a given branch.
+///
+/// Uses an in-memory TTL cache + request coalescing to reduce Vercel API usage.
 pub async fn fetch_deployment_for_branch(
     config: &Config,
     _repo: &str,
@@ -17,6 +25,61 @@ pub async fn fetch_deployment_for_branch(
         None => return Ok(None),
     };
 
+    let key = branch.trim().to_string();
+
+    let cached = DEPLOYMENT_CACHE
+        .get_or_try_init_with_ttl(key, || async {
+            let outcome = fetch_deployment_for_branch_uncached(token, branch).await;
+            outcome_to_cached(outcome)
+        })
+        .await;
+
+    cached.into_result()
+}
+
+struct FetchError {
+    msg: String,
+    backoff: Duration,
+}
+
+type FetchOutcome<T> = std::result::Result<T, FetchError>;
+
+fn outcome_to_cached(
+    outcome: FetchOutcome<Option<VercelDeployment>>,
+) -> (Cached<Option<VercelDeployment>>, Duration) {
+    match outcome {
+        Ok(dep) => {
+            let ttl = dep
+                .as_ref()
+                .map(|d| ttl_for_deployment_status(d.status))
+                .unwrap_or(Duration::from_secs(5 * 60));
+            (Cached::Ok(dep), ttl)
+        }
+        Err(e) => (Cached::Err(e.msg), e.backoff),
+    }
+}
+
+fn ttl_for_deployment_status(status: VercelStatus) -> Duration {
+    match status {
+        VercelStatus::Ready => Duration::from_secs(5 * 60),
+        VercelStatus::Error | VercelStatus::Canceled => Duration::from_secs(10 * 60),
+        VercelStatus::Building | VercelStatus::Queued => Duration::from_secs(20),
+    }
+}
+
+fn backoff_from_retry_after(response: &reqwest::Response) -> Option<Duration> {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+async fn fetch_deployment_for_branch_uncached(
+    token: &str,
+    branch: &str,
+) -> FetchOutcome<Option<VercelDeployment>> {
     let client = &*HTTP_CLIENT;
 
     // Query deployments filtered by branch (meta.githubCommitRef)
@@ -31,14 +94,26 @@ pub async fn fetch_deployment_for_branch(
         .get(&url)
         .header("Authorization", format!("Bearer {}", token))
         .send()
-        .await?;
+        .await
+        .map_err(|e| anyhow_to_fetch_error(e.into()))?;
+
+    if response.status().as_u16() == 429 {
+        let backoff = backoff_from_retry_after(&response).unwrap_or(Duration::from_secs(60));
+        return Err(FetchError {
+            msg: format!("Vercel API rate limited: {}", response.status()),
+            backoff,
+        });
+    }
 
     if !response.status().is_success() {
         tracing::warn!("Vercel API error: {}", response.status());
         return Ok(None);
     }
 
-    let body: serde_json::Value = response.json().await?;
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| anyhow_to_fetch_error(e.into()))?;
 
     let deployment = body["deployments"]
         .as_array()
@@ -69,6 +144,13 @@ pub async fn fetch_deployment_for_branch(
         });
 
     Ok(deployment)
+}
+
+fn anyhow_to_fetch_error(e: anyhow::Error) -> FetchError {
+    FetchError {
+        msg: e.to_string(),
+        backoff: Duration::from_secs(60),
+    }
 }
 
 /// Alternative: Get deployment status from GitHub commit statuses
