@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::data::{GitHubPR, GitHubPRStatus};
+use crate::integrations::HTTP_CLIENT;
 use anyhow::{Context, Result};
 
 const GITHUB_API_URL: &str = "https://api.github.com";
@@ -23,9 +24,12 @@ pub async fn fetch_pr_from_url(config: &Config, pr_url: &str) -> Result<GitHubPR
 
 /// Fetch PR details from GitHub API
 pub async fn fetch_pr(config: &Config, owner: &str, repo: &str, number: u64) -> Result<GitHubPR> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
-    let url = format!("{}/repos/{}/{}/pulls/{}", GITHUB_API_URL, owner, repo, number);
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}",
+        GITHUB_API_URL, owner, repo, number
+    );
 
     let response = client
         .get(&url)
@@ -88,14 +92,41 @@ fn determine_pr_status(pr: &serde_json::Value, reviews: &[serde_json::Value]) ->
         return GitHubPRStatus::Draft;
     }
 
-    // Analyze reviews
+    // Track latest review per reviewer to avoid "sticky CHANGES_REQUESTED" bug
+    // A reviewer may request changes, then later approve - only the latest matters
+    use std::collections::HashMap;
+    let mut latest_by_reviewer: HashMap<&str, (&str, &str)> = HashMap::new();
+
+    for review in reviews {
+        let Some(reviewer) = review["user"]["login"].as_str() else {
+            continue;
+        };
+        let Some(state) = review["state"].as_str() else {
+            continue;
+        };
+        let submitted_at = review["submitted_at"].as_str().unwrap_or("");
+
+        // Keep only the latest review from each reviewer
+        // ISO 8601 timestamps can be compared lexicographically
+        latest_by_reviewer
+            .entry(reviewer)
+            .and_modify(|(current_state, current_time)| {
+                if submitted_at > *current_time {
+                    *current_state = state;
+                    *current_time = submitted_at;
+                }
+            })
+            .or_insert((state, submitted_at));
+    }
+
+    // Aggregate latest reviews from all reviewers
     let mut has_approval = false;
     let mut has_changes_requested = false;
 
-    for review in reviews {
-        match review["state"].as_str() {
-            Some("APPROVED") => has_approval = true,
-            Some("CHANGES_REQUESTED") => has_changes_requested = true,
+    for (state, _) in latest_by_reviewer.values() {
+        match *state {
+            "APPROVED" => has_approval = true,
+            "CHANGES_REQUESTED" => has_changes_requested = true,
             _ => {}
         }
     }
@@ -108,7 +139,12 @@ fn determine_pr_status(pr: &serde_json::Value, reviews: &[serde_json::Value]) ->
         .as_array()
         .map(|a| !a.is_empty())
         .unwrap_or(false)
+        || pr["requested_teams"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
     {
+        // Check both individual reviewers AND team review requests
         GitHubPRStatus::ReviewRequested
     } else {
         GitHubPRStatus::Open

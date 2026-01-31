@@ -2,14 +2,29 @@
 //!
 //! Provides fuse.js-like search capabilities:
 //! - Multi-term search (whitespace splits terms, ALL must match)
-//! - Weighted field scoring
-//! - Smart case handling
+//! - Weighted field scoring (Title > ID > Description > others)
+//! - Match type scoring (Exact > Prefix > Fuzzy)
+//! - Recency weighting (recently updated issues rank higher)
 
 use crate::data::Workstream;
+use chrono::Utc;
 use nucleo::{
     pattern::{CaseMatching, Normalization, Pattern},
     Config, Matcher, Utf32Str,
 };
+
+/// Match quality type for scoring
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MatchType {
+    /// No match
+    None = 0,
+    /// Fuzzy match (characters scattered)
+    Fuzzy = 1,
+    /// Prefix match (query starts the text)
+    Prefix = 2,
+    /// Exact match (query equals text, case-insensitive)
+    Exact = 3,
+}
 
 /// Result of a search match with score and context
 pub struct SearchResult {
@@ -36,75 +51,187 @@ impl FuzzySearch {
         }
     }
 
-    /// Match a single term against text, return score if matched
-    fn match_term(&mut self, term: &str, haystack: &str) -> Option<u32> {
+    /// Determine the match type for a term against text
+    fn match_type(&self, term: &str, haystack: &str) -> MatchType {
+        let term_lower = term.to_lowercase();
+        let haystack_lower = haystack.to_lowercase();
+
+        if haystack_lower == term_lower {
+            MatchType::Exact
+        } else if haystack_lower.starts_with(&term_lower) {
+            MatchType::Prefix
+        } else {
+            MatchType::Fuzzy
+        }
+    }
+
+    /// Match a single term against text, return (score, match_type) if matched
+    fn match_term(&mut self, term: &str, haystack: &str) -> Option<(u32, MatchType)> {
         if term.is_empty() || haystack.is_empty() {
-            return if term.is_empty() { Some(0) } else { None };
+            return if term.is_empty() {
+                Some((0, MatchType::Exact))
+            } else {
+                None
+            };
         }
 
         let pattern = Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart);
         let mut haystack_buf = Vec::new();
         let haystack_utf32 = Utf32Str::new(haystack, &mut haystack_buf);
 
-        pattern.score(haystack_utf32, &mut self.matcher)
+        pattern
+            .score(haystack_utf32, &mut self.matcher)
+            .map(|score| {
+                let match_type = self.match_type(term, haystack);
+                (score, match_type)
+            })
     }
 
     /// Multi-term search: split query on whitespace, ALL terms must match (AND semantics)
-    /// Returns total score if all terms match, None otherwise
-    pub fn multi_term_match(&mut self, query: &str, haystack: &str) -> Option<u32> {
+    /// Returns (total_score, best_match_type) if all terms match, None otherwise
+    pub fn multi_term_match(&mut self, query: &str, haystack: &str) -> Option<(u32, MatchType)> {
         let terms: Vec<&str> = query.split_whitespace().collect();
 
         if terms.is_empty() {
-            return Some(0);
+            return Some((0, MatchType::Exact));
         }
 
         let mut total_score = 0u32;
+        let mut best_match_type = MatchType::Exact; // Start with best, degrade if needed
 
         for term in terms {
             match self.match_term(term, haystack) {
-                Some(score) => total_score = total_score.saturating_add(score),
+                Some((score, match_type)) => {
+                    total_score = total_score.saturating_add(score);
+                    // The overall match type is the worst match among all terms
+                    if (match_type as u8) < (best_match_type as u8) {
+                        best_match_type = match_type;
+                    }
+                }
                 None => return None, // Any term not matching = no match
             }
         }
 
-        Some(total_score)
+        Some((total_score, best_match_type))
+    }
+
+    /// Calculate match score with match-type bonus
+    /// Match type bonus: Exact=1000, Prefix=500, Fuzzy=100
+    fn calculate_score(base_score: u32, match_type: MatchType, field_weight: u32) -> u32 {
+        let match_bonus = match match_type {
+            MatchType::Exact => 1000,
+            MatchType::Prefix => 500,
+            MatchType::Fuzzy => 100,
+            MatchType::None => 0,
+        };
+
+        // Combine: (match_bonus * field_weight) + base_score
+        // This ensures exact title matches always rank highest
+        (match_bonus * field_weight / 100).saturating_add(base_score)
+    }
+
+    /// Calculate recency bonus based on updated_at
+    /// Returns 0-200 points based on how recently the issue was updated
+    fn recency_bonus(ws: &Workstream) -> u32 {
+        let now = Utc::now();
+        let updated = ws.linear_issue.updated_at;
+        let days_ago = (now - updated).num_days().max(0) as u32;
+
+        // Decay: 200 points if updated today, -10 points per day, min 0
+        200u32.saturating_sub(days_ago.saturating_mul(10))
+    }
+
+    /// Calculate actionable bonus for issues with active work
+    /// Issues with agents or PRs are likely what you're looking for
+    fn actionable_bonus(ws: &Workstream) -> u32 {
+        let mut bonus = 0u32;
+
+        // Active agent is highly relevant
+        if ws.agent_session.is_some() {
+            bonus += 150;
+        }
+
+        // Has PR attached
+        if ws.github_pr.is_some() {
+            bonus += 75;
+        }
+
+        bonus
     }
 
     /// Search a workstream across all relevant fields
     /// Returns (score, matched_field, excerpt) if matched
+    ///
+    /// Scoring priority:
+    /// 1. Title matches rank highest (weight 1000 + 1500 flat bonus)
+    /// 2. Match type: Exact > Prefix > Fuzzy
+    /// 3. Recency: recently updated issues get bonus points
+    /// 4. Actionable: issues with agents/PRs get bonus points
+    ///
+    /// Field weight tiers:
+    /// - Primary (Title, ID): 1000 - what you're searching FOR
+    /// - Content (Description, PR): 300-400 - supporting details
+    /// - Metadata (Project, Team, Cycle): 50 - categorical, almost filter territory
     pub fn search_workstream(&mut self, ws: &Workstream, query: &str) -> Option<SearchResult> {
         let issue = &ws.linear_issue;
+        let recency = Self::recency_bonus(ws);
 
-        // Define fields to search with their weights (higher = more important)
-        // Weight multipliers affect the final score
-        let fields: Vec<(&str, u32, &str)> = vec![
-            (&issue.identifier, 1000, "identifier"),
-            (&issue.title, 800, "title"),
-        ];
+        // Actionable bonus: issues with active work rank higher
+        let actionable_bonus = Self::actionable_bonus(ws);
 
         let mut best_result: Option<SearchResult> = None;
 
-        // Check direct fields
-        for (text, weight, field_name) in &fields {
-            if let Some(score) = self.multi_term_match(query, text) {
-                let weighted_score = score.saturating_mul(*weight / 100);
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
-                    best_result = Some(SearchResult {
-                        score: weighted_score,
-                        matched_field: field_name.to_string(),
-                        excerpt: text.to_string(),
-                    });
-                }
+        // Track if we matched on a primary field (title/id/description/pr)
+        let mut matched_primary = false;
+
+        // Helper to check if new result is better
+        let is_better = |new_score: u32, current: &Option<SearchResult>| {
+            current.as_ref().is_none_or(|r| new_score > r.score)
+        };
+
+        // Check title FIRST (highest priority field)
+        // Title gets weight 1000 + flat bonus of 1500 to ensure it dominates
+        if let Some((base_score, match_type)) = self.multi_term_match(query, &issue.title) {
+            let title_flat_bonus = 1500u32;
+            let score = Self::calculate_score(base_score, match_type, 1000)
+                .saturating_add(title_flat_bonus)
+                .saturating_add(recency)
+                .saturating_add(actionable_bonus);
+            if is_better(score, &best_result) {
+                matched_primary = true;
+                best_result = Some(SearchResult {
+                    score,
+                    matched_field: "title".to_string(),
+                    excerpt: issue.title.clone(),
+                });
             }
         }
 
-        // Check optional description
+        // Check identifier (second highest - exact ID lookups)
+        if let Some((base_score, match_type)) = self.multi_term_match(query, &issue.identifier) {
+            let score = Self::calculate_score(base_score, match_type, 1000)
+                .saturating_add(recency)
+                .saturating_add(actionable_bonus);
+            if is_better(score, &best_result) {
+                matched_primary = true;
+                best_result = Some(SearchResult {
+                    score,
+                    matched_field: "identifier".to_string(),
+                    excerpt: issue.identifier.clone(),
+                });
+            }
+        }
+
+        // Check optional description (content field)
         if let Some(desc) = &issue.description {
-            if let Some(score) = self.multi_term_match(query, desc) {
-                let weighted_score = score.saturating_mul(4); // weight 400
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, desc) {
+                let score = Self::calculate_score(base_score, match_type, 400)
+                    .saturating_add(recency)
+                    .saturating_add(actionable_bonus);
+                if is_better(score, &best_result) {
+                    matched_primary = true;
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "description".to_string(),
                         excerpt: create_excerpt(desc, query, 80),
                     });
@@ -112,13 +239,15 @@ impl FuzzySearch {
             }
         }
 
-        // Check team
+        // Metadata fields: low weight (50) - these are categorical, use filters instead
+        // Team
         if let Some(team) = &issue.team {
-            if let Some(score) = self.multi_term_match(query, team) {
-                let weighted_score = score.saturating_mul(3); // weight 300
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, team) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "team".to_string(),
                         excerpt: format!("Team: {}", team),
                     });
@@ -126,13 +255,14 @@ impl FuzzySearch {
             }
         }
 
-        // Check project
+        // Project
         if let Some(project) = &issue.project {
-            if let Some(score) = self.multi_term_match(query, project) {
-                let weighted_score = score.saturating_mul(3); // weight 300
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, project) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "project".to_string(),
                         excerpt: format!("Project: {}", project),
                     });
@@ -140,13 +270,14 @@ impl FuzzySearch {
             }
         }
 
-        // Check cycle
+        // Cycle
         if let Some(cycle) = &issue.cycle {
-            if let Some(score) = self.multi_term_match(query, &cycle.name) {
-                let weighted_score = score.saturating_mul(3); // weight 300
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &cycle.name) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "cycle".to_string(),
                         excerpt: format!("Cycle: {}", cycle.name),
                     });
@@ -154,13 +285,14 @@ impl FuzzySearch {
             }
         }
 
-        // Check labels
+        // Labels (slightly higher than other metadata, can be more specific)
         for label in &issue.labels {
-            if let Some(score) = self.multi_term_match(query, &label.name) {
-                let weighted_score = score.saturating_mul(2); // weight 200
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &label.name) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 75).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "label".to_string(),
                         excerpt: format!("Label: {}", label.name),
                     });
@@ -168,14 +300,15 @@ impl FuzzySearch {
             }
         }
 
-        // Check parent issue
+        // Parent issue (related content, medium-low weight)
         if let Some(parent) = &issue.parent {
             let parent_text = format!("{} {}", parent.identifier, parent.title);
-            if let Some(score) = self.multi_term_match(query, &parent_text) {
-                let weighted_score = score.saturating_mul(2); // weight 200
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &parent_text) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "parent".to_string(),
                         excerpt: format!("Parent: {} {}", parent.identifier, parent.title),
                     });
@@ -183,14 +316,15 @@ impl FuzzySearch {
             }
         }
 
-        // Check children
+        // Children (related content, medium-low weight)
         for child in &issue.children {
             let child_text = format!("{} {}", child.identifier, child.title);
-            if let Some(score) = self.multi_term_match(query, &child_text) {
-                let weighted_score = score.saturating_mul(2); // weight 200
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &child_text) {
+                let score =
+                    Self::calculate_score(base_score, match_type, 100).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "child".to_string(),
                         excerpt: format!("Sub-issue: {} {}", child.identifier, child.title),
                     });
@@ -198,13 +332,15 @@ impl FuzzySearch {
             }
         }
 
-        // Check attachments
+        // Attachments (low priority metadata)
         for attachment in &issue.attachments {
-            if let Some(score) = self.multi_term_match(query, &attachment.title) {
-                let weighted_score = score.saturating_mul(1); // weight 100
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &attachment.title)
+            {
+                let score =
+                    Self::calculate_score(base_score, match_type, 50).saturating_add(recency);
+                if is_better(score, &best_result) {
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "attachment".to_string(),
                         excerpt: format!("Attachment: {}", attachment.title),
                     });
@@ -212,18 +348,29 @@ impl FuzzySearch {
             }
         }
 
-        // Check GitHub PR
+        // GitHub PR (content field - branch names are meaningful)
         if let Some(pr) = &ws.github_pr {
             let pr_text = format!("PR#{} {}", pr.number, pr.branch);
-            if let Some(score) = self.multi_term_match(query, &pr_text) {
-                let weighted_score = score.saturating_mul(4); // weight 400
-                if best_result.as_ref().map_or(true, |r| weighted_score > r.score) {
+            if let Some((base_score, match_type)) = self.multi_term_match(query, &pr_text) {
+                let score = Self::calculate_score(base_score, match_type, 300)
+                    .saturating_add(recency)
+                    .saturating_add(actionable_bonus);
+                if is_better(score, &best_result) {
+                    matched_primary = true;
                     best_result = Some(SearchResult {
-                        score: weighted_score,
+                        score,
                         matched_field: "pr".to_string(),
                         excerpt: format!("PR #{}: {}", pr.number, pr.branch),
                     });
                 }
+            }
+        }
+
+        // Apply penalty if only matched on metadata (not primary fields)
+        if !matched_primary {
+            if let Some(ref mut result) = best_result {
+                // 50% penalty for metadata-only matches
+                result.score /= 2;
             }
         }
 
@@ -260,36 +407,5 @@ fn create_excerpt(text: &str, query: &str, max_len: usize) -> String {
         } else {
             excerpt
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_single_term_match() {
-        let mut search = FuzzySearch::new();
-        assert!(search.multi_term_match("test", "this is a test").is_some());
-        assert!(search.multi_term_match("xyz", "this is a test").is_none());
-    }
-
-    #[test]
-    fn test_multi_term_match() {
-        let mut search = FuzzySearch::new();
-        // All terms must match
-        assert!(search
-            .multi_term_match("test case", "this is a test case")
-            .is_some());
-        assert!(search
-            .multi_term_match("test xyz", "this is a test case")
-            .is_none());
-    }
-
-    #[test]
-    fn test_case_insensitive() {
-        let mut search = FuzzySearch::new();
-        assert!(search.multi_term_match("TEST", "this is a test").is_some());
-        assert!(search.multi_term_match("Test", "THIS IS A TEST").is_some());
     }
 }

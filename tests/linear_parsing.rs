@@ -26,7 +26,10 @@ fn test_parse_issue_with_null_optional_fields() {
     node["description"] = json!(null);
 
     let result = parse_issue(&node);
-    assert!(result.is_some(), "Should parse issue with null optional fields");
+    assert!(
+        result.is_some(),
+        "Should parse issue with null optional fields"
+    );
 
     let linked = result.unwrap();
     assert!(linked.issue.project.is_none());
@@ -78,7 +81,11 @@ fn test_all_status_types() {
         node["state"]["type"] = json!(state_type);
 
         let result = parse_issue(&node);
-        assert!(result.is_some(), "Should parse issue with state type: {}", state_type);
+        assert!(
+            result.is_some(),
+            "Should parse issue with state type: {}",
+            state_type
+        );
 
         let linked = result.unwrap();
         assert_eq!(
@@ -103,4 +110,48 @@ fn test_review_status_detection() {
 
     let linked = result.unwrap();
     assert_eq!(linked.issue.status.display_name(), "In Review");
+}
+
+#[test]
+fn test_review_status_with_started_type() {
+    // This tests the fix for the bug where type "started" with name "In Review"
+    // was incorrectly mapped to InProgress instead of InReview
+    let mut node = minimal_issue_json();
+    node["state"] = json!({
+        "name": "In Review",
+        "type": "started"  // Common Linear configuration
+    });
+
+    let result = parse_issue(&node);
+    assert!(
+        result.is_some(),
+        "Should parse issue with started type and review name"
+    );
+
+    let linked = result.unwrap();
+    assert_eq!(
+        linked.issue.status.display_name(),
+        "In Review",
+        "Type 'started' with name 'In Review' should map to InReview status"
+    );
+}
+
+#[test]
+fn test_code_review_status_with_started_type() {
+    // Another common variant - "Code Review" instead of "In Review"
+    let mut node = minimal_issue_json();
+    node["state"] = json!({
+        "name": "Code Review",
+        "type": "started"
+    });
+
+    let result = parse_issue(&node);
+    assert!(result.is_some());
+
+    let linked = result.unwrap();
+    assert_eq!(
+        linked.issue.status.display_name(),
+        "In Review",
+        "Type 'started' with name 'Code Review' should map to InReview status"
+    );
 }

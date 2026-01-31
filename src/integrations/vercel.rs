@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::data::{VercelDeployment, VercelStatus};
+use crate::integrations::HTTP_CLIENT;
 use anyhow::Result;
 use chrono::Utc;
 
@@ -16,12 +17,14 @@ pub async fn fetch_deployment_for_branch(
         None => return Ok(None),
     };
 
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
     // Query deployments filtered by branch (meta.githubCommitRef)
+    // URL encode the branch name to handle special characters like "/" in "fix/issue-123"
     let url = format!(
         "{}/v6/deployments?limit=1&meta-githubCommitRef={}",
-        VERCEL_API_URL, branch
+        VERCEL_API_URL,
+        urlencoding::encode(branch)
     );
 
     let response = client
@@ -60,10 +63,7 @@ pub async fn fetch_deployment_for_branch(
                 status,
                 created_at: d["createdAt"]
                     .as_i64()
-                    .map(|ts| {
-                        chrono::DateTime::from_timestamp_millis(ts)
-                            .unwrap_or_else(Utc::now)
-                    })
+                    .map(|ts| chrono::DateTime::from_timestamp_millis(ts).unwrap_or_else(Utc::now))
                     .unwrap_or_else(Utc::now),
             }
         });
@@ -80,7 +80,7 @@ pub async fn fetch_deployment_from_github_status(
     repo: &str,
     commit_sha: &str,
 ) -> Result<Option<VercelDeployment>> {
-    let client = reqwest::Client::new();
+    let client = &*HTTP_CLIENT;
 
     let url = format!(
         "https://api.github.com/repos/{}/{}/commits/{}/statuses",

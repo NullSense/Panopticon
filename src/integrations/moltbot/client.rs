@@ -42,11 +42,7 @@ pub async fn fetch_sessions(port: Option<u16>) -> Result<Vec<AgentSession>> {
         .timeout(Duration::from_millis(500))
         .build()?;
 
-    let response = client
-        .get(&url)
-        .query(&[("active", "true")])
-        .send()
-        .await?;
+    let response = client.get(&url).query(&[("active", "true")]).send().await?;
 
     if !response.status().is_success() {
         anyhow::bail!("Moltbot API returned status {}", response.status());
@@ -82,6 +78,7 @@ pub async fn fetch_sessions(port: Option<u16>) -> Result<Vec<AgentSession>> {
                 agent_type: AgentType::Clawdbot,
                 status,
                 working_directory,
+                git_branch: None, // Moltbot doesn't track git branches yet
                 last_output: None,
                 started_at,
                 window_id: None,

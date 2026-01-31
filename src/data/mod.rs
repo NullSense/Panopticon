@@ -1,6 +1,10 @@
+mod sorting;
+
+pub use sorting::sort_children;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A workstream represents a Linear issue and all its linked resources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +13,9 @@ pub struct Workstream {
     pub github_pr: Option<GitHubPR>,
     pub vercel_deployment: Option<VercelDeployment>,
     pub agent_session: Option<AgentSession>,
+    /// Whether this workstream is from cache and hasn't been refreshed yet
+    #[serde(skip)]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +33,8 @@ pub struct LinearIssue {
     pub labels: Vec<LinearLabel>,
     pub project: Option<String>,
     pub team: Option<String>,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
     pub estimate: Option<f32>,
     pub attachments: Vec<LinearAttachment>,
     pub parent: Option<LinearParentRef>,
@@ -140,7 +149,8 @@ impl LinearPriority {
             Self::Medium,
             Self::Low,
             Self::NoPriority,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -207,7 +217,8 @@ impl LinearStatus {
             Self::Done,
             Self::Canceled,
             Self::Duplicate,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -266,7 +277,8 @@ impl GitHubPRStatus {
             Self::Approved,
             Self::Merged,
             Self::Closed,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -315,7 +327,8 @@ impl VercelStatus {
             Self::Queued,
             Self::Error,
             Self::Canceled,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -325,6 +338,7 @@ pub struct AgentSession {
     pub agent_type: AgentType,
     pub status: AgentStatus,
     pub working_directory: Option<String>,
+    pub git_branch: Option<String>,
     pub last_output: Option<String>,
     pub started_at: DateTime<Utc>,
     pub window_id: Option<String>, // For teleporting
@@ -383,7 +397,8 @@ impl AgentStatus {
             Self::WaitingForInput,
             Self::Done,
             Self::Error,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
@@ -399,11 +414,29 @@ pub enum SortMode {
     ByPRActivity,
 }
 
+/// Section type for the two-section agent-first view
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SectionType {
+    /// Issues with active agent sessions
+    AgentSessions,
+    /// Issues without agents
+    Issues,
+}
+
+impl SectionType {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::AgentSessions => "Agent Sessions",
+            Self::Issues => "Issues",
+        }
+    }
+}
+
 /// Visual item for navigation - maps exactly to what's rendered
 #[derive(Debug, Clone)]
 pub enum VisualItem {
     /// Section header (non-selectable, but included for offset calculation)
-    SectionHeader(LinearStatus),
+    SectionHeader(SectionType),
     /// Workstream row (selectable) - contains index into workstreams vec
     Workstream(usize),
 }
@@ -443,6 +476,18 @@ impl SortMode {
             _ => None,
         }
     }
+
+    pub fn from_config_str(input: &str) -> Option<Self> {
+        match input.trim().to_lowercase().as_str() {
+            "priority" => Some(Self::ByPriority),
+            "status" | "linear" | "linear_status" | "linearstatus" => Some(Self::ByLinearStatus),
+            "agent" | "agent_status" | "agentstatus" => Some(Self::ByAgentStatus),
+            "vercel" | "vercel_status" | "vercelstatus" => Some(Self::ByVercelStatus),
+            "updated" | "last_updated" | "lastupdated" => Some(Self::ByLastUpdated),
+            "pr" | "pr_activity" | "practivity" => Some(Self::ByPRActivity),
+            _ => None,
+        }
+    }
 }
 
 /// Application state
@@ -452,66 +497,130 @@ pub struct AppState {
     pub search_query: String,
     pub search_mode: bool,
     pub last_refresh: Option<DateTime<Utc>>,
-    pub collapsed_sections: HashSet<LinearStatus>,
+    pub collapsed_sections: HashSet<SectionType>,
     pub sort_mode: SortMode,
 }
 
 impl AppState {
+    /// Get the sort key for a workstream based on current sort mode
+    fn workstream_sort_key(&self, ws: &Workstream) -> impl Ord {
+        match self.sort_mode {
+            SortMode::ByLinearStatus => {
+                // Default order - sort by issue identifier
+                (0u8, ws.linear_issue.identifier.clone(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByAgentStatus => {
+                let status = ws
+                    .agent_session
+                    .as_ref()
+                    .map(|s| agent_sort_order(s.status))
+                    .unwrap_or(99);
+                (status, String::new(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByVercelStatus => {
+                let status = ws
+                    .vercel_deployment
+                    .as_ref()
+                    .map(|d| vercel_sort_order(d.status))
+                    .unwrap_or(99);
+                (status, String::new(), 0i64, 0u8, 0u8)
+            }
+            SortMode::ByLastUpdated => {
+                // Negate timestamp for descending order (most recent first)
+                let ts = -ws.linear_issue.updated_at.timestamp();
+                (0u8, String::new(), ts, 0u8, 0u8)
+            }
+            SortMode::ByPriority => (
+                ws.linear_issue.priority.sort_order(),
+                String::new(),
+                0i64,
+                0u8,
+                0u8,
+            ),
+            SortMode::ByPRActivity => {
+                let pr = ws
+                    .github_pr
+                    .as_ref()
+                    .map(|p| pr_sort_order(p.status))
+                    .unwrap_or(99);
+                (0u8, String::new(), 0i64, pr, 0u8)
+            }
+        }
+    }
+
+    /// Hierarchically sort workstreams maintaining parent-child relationships.
+    /// Parents are sorted by the criteria, children appear directly under their parent
+    /// and are also sorted by the same criteria within their sibling group.
+    fn hierarchical_sort<'a>(&self, workstreams: &[&'a Workstream]) -> Vec<&'a Workstream> {
+        use std::collections::HashMap;
+
+        // Build parent_id -> children map
+        let mut children_of: HashMap<&str, Vec<&Workstream>> = HashMap::new();
+        let mut roots: Vec<&Workstream> = Vec::new();
+
+        // First pass: identify all issue IDs we have
+        let known_ids: std::collections::HashSet<&str> = workstreams
+            .iter()
+            .map(|ws| ws.linear_issue.id.as_str())
+            .collect();
+
+        // Second pass: categorize as root or child
+        for ws in workstreams {
+            if let Some(parent) = &ws.linear_issue.parent {
+                // Only treat as child if parent is in our list
+                if known_ids.contains(parent.id.as_str()) {
+                    children_of.entry(parent.id.as_str()).or_default().push(ws);
+                } else {
+                    // Parent not in list (filtered out, different status, etc.) - treat as root
+                    roots.push(ws);
+                }
+            } else {
+                roots.push(ws);
+            }
+        }
+
+        // Sort roots by the current sort mode
+        roots.sort_by_key(|ws| self.workstream_sort_key(ws));
+
+        // Sort each children group
+        for children in children_of.values_mut() {
+            children.sort_by_key(|ws| self.workstream_sort_key(ws));
+        }
+
+        // Flatten via DFS (depth-first traversal)
+        let mut result = Vec::with_capacity(workstreams.len());
+
+        fn dfs<'a>(
+            ws: &'a Workstream,
+            children_of: &HashMap<&str, Vec<&'a Workstream>>,
+            result: &mut Vec<&'a Workstream>,
+        ) {
+            result.push(ws);
+            if let Some(children) = children_of.get(ws.linear_issue.id.as_str()) {
+                for child in children {
+                    dfs(child, children_of, result);
+                }
+            }
+        }
+
+        for root in roots {
+            dfs(root, &children_of, &mut result);
+        }
+
+        result
+    }
+
     pub fn grouped_workstreams(&self) -> Vec<(LinearStatus, Vec<&Workstream>)> {
         let mut groups: std::collections::HashMap<LinearStatus, Vec<&Workstream>> =
             std::collections::HashMap::new();
 
         for ws in &self.workstreams {
-            groups
-                .entry(ws.linear_issue.status)
-                .or_default()
-                .push(ws);
+            groups.entry(ws.linear_issue.status).or_default().push(ws);
         }
 
-        // Sort within each group based on sort mode
+        // Apply hierarchical sort within each group
         for workstreams in groups.values_mut() {
-            match self.sort_mode {
-                SortMode::ByLinearStatus => {
-                    // Default order - sort by issue identifier
-                    workstreams.sort_by(|a, b| a.linear_issue.identifier.cmp(&b.linear_issue.identifier));
-                }
-                SortMode::ByAgentStatus => {
-                    // Sort by agent status (waiting first, then running, idle, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_status = a.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-                        let b_status = b.agent_session.as_ref().map(|s| agent_sort_order(s.status)).unwrap_or(99);
-                        a_status.cmp(&b_status)
-                    });
-                }
-                SortMode::ByVercelStatus => {
-                    // Sort by vercel status (error first, then building, ready, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_status = a.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
-                        let b_status = b.vercel_deployment.as_ref().map(|d| vercel_sort_order(d.status)).unwrap_or(99);
-                        a_status.cmp(&b_status)
-                    });
-                }
-                SortMode::ByLastUpdated => {
-                    // Sort by Linear issue updated_at (most recent first)
-                    workstreams.sort_by(|a, b| {
-                        b.linear_issue.updated_at.cmp(&a.linear_issue.updated_at)
-                    });
-                }
-                SortMode::ByPriority => {
-                    // Sort by priority (urgent first)
-                    workstreams.sort_by(|a, b| {
-                        a.linear_issue.priority.sort_order().cmp(&b.linear_issue.priority.sort_order())
-                    });
-                }
-                SortMode::ByPRActivity => {
-                    // Sort by PR status (changes requested first, then review, etc.)
-                    workstreams.sort_by(|a, b| {
-                        let a_pr = a.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
-                        let b_pr = b.github_pr.as_ref().map(|p| pr_sort_order(p.status)).unwrap_or(99);
-                        a_pr.cmp(&b_pr)
-                    });
-                }
-            }
+            *workstreams = self.hierarchical_sort(workstreams);
         }
 
         let mut result: Vec<_> = groups.into_iter().collect();
@@ -519,29 +628,118 @@ impl AppState {
         result
     }
 
+    /// Group workstreams into two sections: Agent Sessions and Issues
+    ///
+    /// Agent Sessions: Issues with an active agent, sorted by agent status → priority
+    /// Issues: Issues without agents, sorted by priority → status
+    pub fn grouped_by_section(&self) -> Vec<(SectionType, Vec<&Workstream>)> {
+        let (mut agent_sessions, mut issues): (Vec<_>, Vec<_>) = self
+            .workstreams
+            .iter()
+            .partition(|ws: &&Workstream| ws.agent_session.is_some());
+
+        // Agent Sessions: sort by agent status → priority
+        agent_sessions.sort_by(|a, b| {
+            let a_status = a
+                .agent_session
+                .as_ref()
+                .map(|s| agent_sort_order(s.status))
+                .unwrap_or(99);
+            let b_status = b
+                .agent_session
+                .as_ref()
+                .map(|s| agent_sort_order(s.status))
+                .unwrap_or(99);
+            a_status.cmp(&b_status).then_with(|| {
+                a.linear_issue
+                    .priority
+                    .sort_order()
+                    .cmp(&b.linear_issue.priority.sort_order())
+            })
+        });
+
+        // Issues: sort by priority → status
+        issues.sort_by(|a, b| {
+            a.linear_issue
+                .priority
+                .sort_order()
+                .cmp(&b.linear_issue.priority.sort_order())
+                .then_with(|| {
+                    a.linear_issue
+                        .status
+                        .sort_order()
+                        .cmp(&b.linear_issue.status.sort_order())
+                })
+        });
+
+        vec![
+            (SectionType::AgentSessions, agent_sessions),
+            (SectionType::Issues, issues),
+        ]
+    }
+
     /// Build visual items list that matches exactly what's rendered
     /// This enables proper j/k navigation through the visual representation
-    pub fn build_visual_items(&self, filtered_indices: &[usize]) -> Vec<VisualItem> {
+    ///
+    /// When `preserve_order` is true (search mode), items are displayed in the
+    /// order given by `filtered_indices` (by relevance score) without section headers.
+    /// When false (normal mode), items are grouped into Agent Sessions and Issues sections.
+    ///
+    /// Time complexity: O(n) where n = number of workstreams
+    /// - Uses HashSet for O(1) filtered_indices membership check
+    /// - Uses HashMap for O(1) id→index lookup
+    pub fn build_visual_items(
+        &self,
+        filtered_indices: &[usize],
+        preserve_order: bool,
+    ) -> Vec<VisualItem> {
+        // In search mode, display results in score order (no grouping)
+        if preserve_order && !filtered_indices.is_empty() {
+            return filtered_indices
+                .iter()
+                .map(|&idx| VisualItem::Workstream(idx))
+                .collect();
+        }
+
+        // Convert filtered_indices to HashSet for O(1) membership check
+        let filtered_set: HashSet<usize> = filtered_indices.iter().copied().collect();
+
+        // Build id→index map for O(1) lookup
+        let index_map: HashMap<&str, usize> = self
+            .workstreams
+            .iter()
+            .enumerate()
+            .map(|(idx, ws)| (ws.linear_issue.id.as_str(), idx))
+            .collect();
+
+        // Group by agent presence with section headers
         let mut items = Vec::new();
-        let grouped = self.grouped_workstreams();
+        let grouped = self.grouped_by_section();
 
-        for (status, workstreams) in grouped {
-            // Add section header
-            items.push(VisualItem::SectionHeader(status));
+        for (section_type, workstreams) in grouped {
+            // Collect filtered workstream indices for this section
+            let section_items: Vec<usize> = workstreams
+                .iter()
+                .filter_map(|ws| index_map.get(ws.linear_issue.id.as_str()).copied())
+                .filter(|idx| filtered_set.contains(idx))
+                .collect();
 
-            // Skip items if collapsed
-            if self.collapsed_sections.contains(&status) {
+            // Skip empty sections
+            if section_items.is_empty() {
                 continue;
             }
 
-            // Add workstream items (only if in filtered list)
-            for ws in workstreams {
-                // Find index in original workstreams vec
-                if let Some(idx) = self.workstreams.iter().position(|w| w.linear_issue.id == ws.linear_issue.id) {
-                    if filtered_indices.contains(&idx) {
-                        items.push(VisualItem::Workstream(idx));
-                    }
-                }
+            // Add section header
+            items.push(VisualItem::SectionHeader(section_type));
+
+            // Skip items if collapsed
+            if self.collapsed_sections.contains(&section_type) {
+                continue;
+            }
+
+            // Add workstream items
+            for idx in section_items {
+                items.push(VisualItem::Workstream(idx));
             }
         }
 

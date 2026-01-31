@@ -194,24 +194,47 @@ $windows = Get-Process | Where-Object {$_.MainWindowTitle -like "*claude*"}
 [tokens]
 linear = "lin_api_..."
 github = "ghp_..."
-vercel = "..."
+vercel = "..."  # optional
 
 [linear]
-# Only show issues assigned to me by default
-filter = "assignee:me"
+filter = "assignee:me"       # Only show issues assigned to you
+fetch_limit = 150            # Max issues per request
+incremental_sync = true      # Only fetch updated issues
+
+[github]
+username = "your-github-username"
+organizations = ["your-org"] # optional
+
+[vercel]
+team_id = "team_..."         # optional
+project_ids = ["prj_..."]    # optional
 
 [polling]
+linear_interval_secs = 15
 github_interval_secs = 30
 vercel_interval_secs = 30
+user_action_cooldown_secs = 10
+
+[cache]
+enabled = true
+file = "cache.json"
+max_age_hours = 24           # Stale indicator threshold
 
 [notifications]
-# Notify when Claude needs input
 enabled = true
 sound = true
+on_review_request = true
+on_approval = true
+on_deploy_failure = true
 
 [ui]
-# Theme
-theme = "default"  # or "nord", "gruvbox", etc.
+theme = ""
+default_sort = "priority"
+show_sub_issues = true       # Show child issues under parents
+show_completed = false       # Hide completed issues
+show_canceled = false        # Hide canceled/duplicate issues
+show_preview = false
+column_widths = [1, 3, 10, 26, 12, 10, 3, 6]
 ```
 
 ## Files & Directories
@@ -220,6 +243,9 @@ theme = "default"  # or "nord", "gruvbox", etc.
 ~/.config/panopticon/
 ├── config.toml          # Main configuration
 └── sessions.json        # Cached session state
+
+~/.cache/panopticon/
+└── workstreams.json     # Cached workstream data (for quick startup)
 
 ~/.claude/settings.json  # Claude Code hooks (modified)
 

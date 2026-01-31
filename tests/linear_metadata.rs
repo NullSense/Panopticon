@@ -35,7 +35,10 @@ fn test_parse_issue_with_incomplete_cycle() {
     });
 
     let result = parse_issue(&node);
-    assert!(result.is_some(), "Should parse issue even with incomplete cycle");
+    assert!(
+        result.is_some(),
+        "Should parse issue even with incomplete cycle"
+    );
 
     let linked = result.unwrap();
     assert!(linked.issue.cycle.is_none());

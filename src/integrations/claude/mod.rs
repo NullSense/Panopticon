@@ -37,7 +37,7 @@ pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
     let search_term = session
         .working_directory
         .as_ref()
-        .and_then(|d| d.split('/').last())
+        .and_then(|d| d.split('/').next_back())
         .unwrap_or(&session.id);
 
     let script = format!(
@@ -78,15 +78,33 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+/// Get the current git branch for a directory
+fn get_git_branch(dir: &str) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty() && s != "HEAD") // Filter out detached HEAD
+}
+
 /// Handle internal hook command (called by Claude hooks)
 pub fn handle_hook(event: &str, session_id: &str, cwd: &str) -> Result<()> {
+    // Map hook events to status strings
+    // Note: "stop" is passed directly to update_session which handles the "done" conversion
+    // This ensures the special "stop" handling in update_session (preserving existing session) works
     let status = match event {
         "start" => "running",
         "active" => "running",
-        "stop" => "done",
+        "stop" => "stop", // Pass "stop" directly, update_session handles conversion to "done"
         _ => "idle",
     };
 
-    state::update_session(session_id, cwd, status)?;
+    // Capture git branch on every event (keeps branch in sync if user switches)
+    let git_branch = get_git_branch(cwd);
+
+    state::update_session(session_id, cwd, git_branch.as_deref(), status)?;
     Ok(())
 }

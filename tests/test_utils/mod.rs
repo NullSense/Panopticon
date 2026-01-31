@@ -1,4 +1,7 @@
+#![allow(dead_code)]
 //! Test utilities and fixtures for panopticon tests
+
+pub mod claude_settings;
 
 use serde_json::{json, Value};
 
@@ -35,18 +38,27 @@ pub fn parse_issue(node: &Value) -> Option<ParsedIssue> {
     use chrono::Utc;
 
     let state_type = node["state"]["type"].as_str()?;
+    let state_name = node["state"]["name"]
+        .as_str()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
     let status = match state_type {
         "backlog" => LinearStatus::Backlog,
         "unstarted" => LinearStatus::Todo,
-        "started" => LinearStatus::InProgress,
+        "started" => {
+            // Check state_name for "review" before defaulting to InProgress
+            // Many Linear setups have "In Review" states with type "started"
+            if state_name.contains("review") {
+                LinearStatus::InReview
+            } else {
+                LinearStatus::InProgress
+            }
+        }
         "completed" => LinearStatus::Done,
         "canceled" => LinearStatus::Canceled,
         _ => {
-            if node["state"]["name"]
-                .as_str()
-                .map(|s| s.to_lowercase().contains("review"))
-                .unwrap_or(false)
-            {
+            // Fallback for unknown types
+            if state_name.contains("review") {
                 LinearStatus::InReview
             } else {
                 LinearStatus::InProgress
@@ -199,6 +211,8 @@ pub fn parse_issue(node: &Value) -> Option<ParsedIssue> {
         labels,
         project: node["project"]["name"].as_str().map(String::from),
         team: node["team"]["name"].as_str().map(String::from),
+        assignee_id: None,
+        assignee_name: None,
         estimate: node["estimate"].as_f64().map(|e| e as f32),
         attachments,
         parent,
@@ -318,9 +332,11 @@ pub struct LinearIssue {
     pub labels: Vec<LinearLabel>,
     pub project: Option<String>,
     pub team: Option<String>,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
     pub estimate: Option<f32>,
     pub attachments: Vec<LinearAttachment>,
-        pub parent: Option<LinearParentRef>,
+    pub parent: Option<LinearParentRef>,
     pub children: Vec<LinearChildRef>,
 }
 
