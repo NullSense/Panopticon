@@ -2189,14 +2189,18 @@ impl App {
 }
 
 fn open_url(url: &str) -> Result<()> {
-    // Use xdg-open on Linux, which works in WSL
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .or_else(|_| {
-            // Fallback to wslview for WSL
-            std::process::Command::new("wslview").arg(url).spawn()
-        })?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn()?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Use xdg-open on Linux, fallback to wslview for WSL
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .or_else(|_| std::process::Command::new("wslview").arg(url).spawn())?;
+    }
     Ok(())
 }
 
@@ -2206,6 +2210,9 @@ fn open_linear_url(url: &str) -> Result<()> {
     let linear_url = url.replace("https://linear.app/", "linear://");
 
     // Try to open with linear:// protocol (desktop app)
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&linear_url).spawn();
+    #[cfg(not(target_os = "macos"))]
     let result = std::process::Command::new("xdg-open")
         .arg(&linear_url)
         .spawn();
