@@ -147,7 +147,7 @@ impl FuzzySearch {
         let mut bonus = 0u32;
 
         // Active agent is highly relevant
-        if ws.agent_session.is_some() {
+        if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
             bonus += 150;
         }
 

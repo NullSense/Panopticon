@@ -30,6 +30,7 @@ fn make_workstream(id: &str, title: &str) -> Workstream {
         },
         github_pr: None,
         vercel_deployment: None,
+        agent_sessions: vec![],
         agent_session: None,
         stale: false,
     }

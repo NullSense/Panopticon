@@ -1,11 +1,28 @@
 //! Layout calculations and text utilities for the TUI.
 
+use once_cell::sync::Lazy;
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Pre-computed padding strings to avoid repeated " ".repeat(n) allocations.
+/// Covers padding widths 0-100 (column widths are typically < 60).
+static PADDING: Lazy<Vec<String>> = Lazy::new(|| (0..=100).map(|n| " ".repeat(n)).collect());
+
+/// Get a padding string of the given width (reuses pre-computed strings).
+#[inline]
+fn get_padding(width: usize) -> &'static str {
+    if width <= 100 {
+        &PADDING[width]
+    } else {
+        // Clamp to the maximum pre-computed width to avoid leaking memory.
+        // Columns should never be wider than 100 chars in practice.
+        &PADDING[100]
+    }
+}
 
 use crate::tui::app::{
     COL_IDX_AGENT, COL_IDX_ID, COL_IDX_PR, COL_IDX_PRIORITY, COL_IDX_STATUS, COL_IDX_TIME,
@@ -18,7 +35,7 @@ pub const PREFIX_WIDTH: usize = 2;
 pub const SEP: &str = " │ ";
 pub const SEP_WIDTH: usize = 3;
 
-pub const COL_MIN_WIDTHS: [usize; NUM_COLUMNS] = [1, 3, 6, 12, 8, 8, 3, 6];
+pub const COL_MIN_WIDTHS: [usize; NUM_COLUMNS] = [1, 3, 6, 12, 8, 14, 3, 6];
 pub const COL_HIDE_ORDER: [usize; 6] = [
     COL_IDX_TIME,
     COL_IDX_VERCEL,
@@ -43,7 +60,10 @@ impl ColumnLayout {
 }
 
 /// Compute column layout based on preferred widths and available space.
-pub fn compute_column_layout(preferred: &[usize; NUM_COLUMNS], available_width: u16) -> ColumnLayout {
+pub fn compute_column_layout(
+    preferred: &[usize; NUM_COLUMNS],
+    available_width: u16,
+) -> ColumnLayout {
     let available = available_width as usize;
     if available <= PREFIX_WIDTH {
         return ColumnLayout {
@@ -201,20 +221,21 @@ pub fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 }
 
 /// Pad text to a specific width with given alignment.
+/// Uses pre-computed padding strings to avoid allocations.
 pub fn pad_to_width(text: &str, width: usize, alignment: Alignment) -> String {
     let mut trimmed = truncate_to_width(text, width);
     let current = display_width(&trimmed);
     let pad = width.saturating_sub(current);
     match alignment {
         Alignment::Left => {
-            trimmed.push_str(&" ".repeat(pad));
+            trimmed.push_str(get_padding(pad));
             trimmed
         }
-        Alignment::Right => format!("{}{}", " ".repeat(pad), trimmed),
+        Alignment::Right => format!("{}{}", get_padding(pad), trimmed),
         Alignment::Center => {
             let left = pad / 2;
             let right = pad.saturating_sub(left);
-            format!("{}{}{}", " ".repeat(left), trimmed, " ".repeat(right))
+            format!("{}{}{}", get_padding(left), trimmed, get_padding(right))
         }
     }
 }
@@ -283,7 +304,11 @@ pub fn ellipsis_line(width: u16) -> Line<'static> {
 }
 
 /// Fit lines to an area, adding ellipsis if content is truncated.
-pub fn fit_lines_to_area<'a>(lines: Vec<Line<'a>>, inner: Rect, keep_bottom: usize) -> Vec<Line<'a>> {
+pub fn fit_lines_to_area<'a>(
+    lines: Vec<Line<'a>>,
+    inner: Rect,
+    keep_bottom: usize,
+) -> Vec<Line<'a>> {
     let width = inner.width as usize;
     let height = inner.height as usize;
     if height == 0 || width == 0 {
@@ -341,9 +366,14 @@ pub fn render_two_col_line<'a>(
     Line::from(spans)
 }
 
-
 /// Calculate a centered popup rectangle within a container.
-pub fn popup_rect(percent_x: u16, percent_y: u16, min_width: u16, min_height: u16, r: Rect) -> Rect {
+pub fn popup_rect(
+    percent_x: u16,
+    percent_y: u16,
+    min_width: u16,
+    min_height: u16,
+    r: Rect,
+) -> Rect {
     let max_width = r.width.saturating_sub(2).max(1);
     let max_height = r.height.saturating_sub(2).max(1);
 

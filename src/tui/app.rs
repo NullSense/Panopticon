@@ -1,7 +1,8 @@
+use crate::agents::UnifiedAgentWatcher;
 use crate::config::Config;
 use crate::data::{
-    AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus, SectionType, SortMode,
-    VisualItem, Workstream,
+    AgentSession, AgentType, AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus,
+    SectionType, SortMode, VisualItem, Workstream,
 };
 use crate::integrations;
 use crate::integrations::cache;
@@ -9,7 +10,9 @@ use crate::integrations::linear::{ProjectInfo, TeamMemberInfo};
 use crate::tui::search::FuzzySearch;
 use anyhow::Result;
 use chrono::Utc;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -20,6 +23,49 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Braille spinner frames for loading animation
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn agent_status_rank(status: crate::data::AgentStatus) -> u8 {
+    match status {
+        crate::data::AgentStatus::WaitingForInput => 0,
+        crate::data::AgentStatus::Error => 1,
+        crate::data::AgentStatus::Running => 2,
+        crate::data::AgentStatus::Idle => 3,
+        crate::data::AgentStatus::Done => 4,
+    }
+}
+
+fn agent_type_rank(agent_type: AgentType) -> u8 {
+    match agent_type {
+        AgentType::ClaudeCode => 0,
+        AgentType::OpenClaw => 1,
+    }
+}
+
+fn repo_name_from_hint(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
+}
+
+fn matches_repo_hint(session: &AgentSession, repo_name: &str) -> bool {
+    session
+        .working_directory
+        .as_deref()
+        .and_then(|dir| Path::new(dir).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == repo_name)
+}
+
+fn pick_primary_session(sessions: &[AgentSession]) -> Option<AgentSession> {
+    sessions
+        .iter()
+        .min_by_key(|s| {
+            (
+                agent_status_rank(s.status),
+                Reverse(s.last_activity.timestamp()),
+                agent_type_rank(s.agent_type),
+            )
+        })
+        .cloned()
+}
 
 /// Search match result with excerpt
 #[derive(Clone)]
@@ -105,6 +151,8 @@ pub struct App {
     pub filtered_indices: Vec<usize>,
     pub visual_items: Vec<VisualItem>,
     pub visual_selected: usize,
+    /// Cached section counts (agent sessions, issues) - computed once per rebuild
+    pub section_counts: HashMap<SectionType, usize>,
 
     // Modal state - single enum replacing 7 booleans
     pub modal: ModalState,
@@ -160,6 +208,10 @@ pub struct App {
     shadow_metadata: Option<RefreshMetadata>,
     /// Timestamp when refresh started (for timeout detection)
     refresh_started_at: Option<Instant>,
+    /// Unified file watcher for real-time agent session updates (Claude + OpenClaw)
+    unified_watcher: Option<UnifiedAgentWatcher>,
+    /// Cached current time for render frame (avoids repeated syscalls)
+    pub frame_now: chrono::DateTime<chrono::Utc>,
 }
 
 // Modal state accessors (backward-compatible interface)
@@ -219,6 +271,7 @@ impl App {
             filtered_indices: vec![],
             visual_items: vec![],
             visual_selected: 0,
+            section_counts: HashMap::new(),
             modal: ModalState::None,
             show_preview: config.ui.show_preview,
             error_message: None,
@@ -254,6 +307,8 @@ impl App {
             shadow_workstreams: Vec::new(),
             shadow_metadata: None,
             refresh_started_at: None,
+            unified_watcher: UnifiedAgentWatcher::new().ok(),
+            frame_now: chrono::Utc::now(),
         };
 
         app.load_cached_state();
@@ -515,6 +570,26 @@ impl App {
             .state
             .build_visual_items(&self.filtered_indices, preserve_order);
 
+        // Cache section counts (O(n) instead of O(n²) per render frame)
+        self.section_counts.clear();
+        for &idx in &self.filtered_indices {
+            if let Some(ws) = self.state.workstreams.get(idx) {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
+                    let count = if !ws.agent_sessions.is_empty() {
+                        ws.agent_sessions.len()
+                    } else {
+                        1
+                    };
+                    *self
+                        .section_counts
+                        .entry(SectionType::AgentSessions)
+                        .or_insert(0) += count;
+                } else {
+                    *self.section_counts.entry(SectionType::Issues).or_insert(0) += 1;
+                }
+            }
+        }
+
         // Ensure selection is valid
         if self.visual_items.is_empty() {
             self.visual_selected = 0;
@@ -553,7 +628,10 @@ impl App {
 
         let mut pos = self.visual_selected;
         for _ in 0..len {
-            if let Some(VisualItem::Workstream(_)) = self.visual_items.get(pos) {
+            if matches!(
+                self.visual_items.get(pos),
+                Some(VisualItem::Workstream(_)) | Some(VisualItem::AgentSession { .. })
+            ) {
                 self.visual_selected = pos;
                 return;
             }
@@ -725,19 +803,51 @@ impl App {
                     }
                 }
                 RefreshResult::Workstream(ws) => {
-                    // Add to shadow storage, not main data
-                    self.shadow_workstreams.push(*ws);
+                    // Track in shadow for final reconciliation
+                    self.shadow_workstreams.push(*ws.clone());
+
+                    // ALSO add/update in main state immediately for real-time display
+                    // Find existing workstream by issue ID and update, or append if new
+                    let issue_id = &ws.linear_issue.id;
+                    if let Some(existing) = self
+                        .state
+                        .workstreams
+                        .iter_mut()
+                        .find(|w| w.linear_issue.id == *issue_id)
+                    {
+                        *existing = *ws;
+                    } else {
+                        self.state.workstreams.push(*ws);
+                    }
+
                     // Monotonic progress: always derived from received count
                     if let Some(ref mut p) = self.refresh_progress {
                         p.completed = self.shadow_workstreams.len();
+                    }
+
+                    // Throttled UI rebuild: only every 10 items to avoid performance hit
+                    if self.shadow_workstreams.len().is_multiple_of(10) {
+                        self.apply_filters();
+                        self.rebuild_visual_items();
                     }
                 }
                 RefreshResult::Metadata(metadata) => {
                     self.shadow_metadata = Some(metadata);
                 }
                 RefreshResult::Complete => {
-                    // Success: swap shadow with main data
-                    std::mem::swap(&mut self.state.workstreams, &mut self.shadow_workstreams);
+                    // Success: reconcile main with shadow (remove stale items not in new set)
+                    // Since we've been adding incrementally, main may have old items that
+                    // were deleted from Linear. Remove any not present in shadow.
+                    let shadow_ids: HashSet<&str> = self
+                        .shadow_workstreams
+                        .iter()
+                        .map(|ws| ws.linear_issue.id.as_str())
+                        .collect();
+                    self.state.workstreams.retain(|ws| {
+                        // Keep if in shadow (was refreshed) or has no ID (unlinked agent session)
+                        shadow_ids.contains(ws.linear_issue.id.as_str())
+                            || ws.linear_issue.id.is_empty()
+                    });
                     self.shadow_workstreams.clear();
 
                     if let Some(metadata) = self.shadow_metadata.take() {
@@ -847,7 +957,11 @@ impl App {
             }
 
             // Agent column
-            if let Some(session) = &ws.agent_session {
+            if let Some(session) = ws
+                .agent_session
+                .as_ref()
+                .or_else(|| ws.agent_sessions.first())
+            {
                 let label_len = match session.status {
                     crate::data::AgentStatus::Running => 3,         // RUN
                     crate::data::AgentStatus::Idle => 4,            // IDLE
@@ -866,7 +980,7 @@ impl App {
         self.column_widths[COL_IDX_ID] = max_id_len + 1 + sub_issue_padding;
         self.column_widths[COL_IDX_TITLE] = max_title_len.min(40); // Cap title at 40
         self.column_widths[COL_IDX_PR] = max_pr_len.min(15);
-        self.column_widths[COL_IDX_AGENT] = max_agent_len.min(12);
+        self.column_widths[COL_IDX_AGENT] = max_agent_len.min(24);
 
         // Status, Priority, Vercel, and Time have fixed widths
         // (already set in defaults, no need to recalculate)
@@ -884,12 +998,12 @@ impl App {
         let available = (terminal_width as usize).saturating_sub(fixed_widths);
 
         // Distribute remaining space to ID, Title, PR, Agent
-        // Title gets 50%, ID gets 20%, PR gets 15%, Agent gets 15%
+        // Title gets 45%, Agent gets 25%, ID gets 15%, PR gets 15%
         if available > 40 {
-            let title_width = (available * 50 / 100).clamp(15, 50);
-            let id_width = (available * 20 / 100).clamp(6, 15);
+            let title_width = (available * 45 / 100).clamp(15, 50);
+            let agent_width = (available * 25 / 100).clamp(12, 28);
+            let id_width = (available * 15 / 100).clamp(6, 15);
             let pr_width = (available * 15 / 100).clamp(8, 15);
-            let agent_width = (available * 15 / 100).clamp(8, 12);
 
             self.column_widths[COL_IDX_ID] = id_width;
             self.column_widths[COL_IDX_TITLE] = title_width;
@@ -933,7 +1047,7 @@ impl App {
             if interval.as_secs() > 0 {
                 let should_refresh = match self.state.last_refresh {
                     Some(last) => {
-                        let elapsed = Utc::now().signed_duration_since(last);
+                        let elapsed = self.frame_now.signed_duration_since(last);
                         elapsed.num_seconds() >= interval.as_secs() as i64
                     }
                     None => true,
@@ -943,6 +1057,125 @@ impl App {
                     self.start_background_refresh();
                 }
             }
+        }
+    }
+
+    /// Poll unified watcher for agent session changes (real-time updates)
+    ///
+    /// Monitors both Claude Code and OpenClaw sessions using OS-level
+    /// file system notifications (inotify on Linux).
+    pub fn poll_unified_watcher(&mut self) -> bool {
+        let Some(watcher) = &self.unified_watcher else {
+            return false;
+        };
+
+        if !watcher.poll() {
+            return false;
+        }
+
+        // File changed - update agent sessions in workstreams
+        let sessions = watcher.get_sessions_snapshot();
+        self.update_agent_sessions_from_watcher(&sessions);
+        true
+    }
+
+    /// Update agent sessions in workstreams from watcher data
+    ///
+    /// This updates existing agent sessions with fresh data from the watcher.
+    /// Also adds new sessions and removes stale ones for true real-time updates.
+    /// Always updates activity data (tool, target, stats) for real-time display.
+    /// Rebuilds visual items when sessions are added/removed or status changes.
+    fn update_agent_sessions_from_watcher(&mut self, sessions: &[AgentSession]) {
+        // Build lookup maps for O(1) matching
+        let session_by_id: HashMap<&str, &AgentSession> =
+            sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+        let mut session_by_branch: HashMap<&str, Vec<&AgentSession>> = HashMap::new();
+        for session in sessions {
+            if let Some(branch) = session.git_branch.as_deref() {
+                session_by_branch.entry(branch).or_default().push(session);
+            }
+        }
+
+        let mut structure_changed = false;
+
+        // Update existing workstream sessions
+        for ws in &mut self.state.workstreams {
+            let mut updated_sessions: Vec<AgentSession> = Vec::new();
+            let mut seen_ids: HashSet<String> = HashSet::new();
+
+            let mut previous_ids: HashSet<String> =
+                ws.agent_sessions.iter().map(|s| s.id.clone()).collect();
+            if previous_ids.is_empty() {
+                if let Some(session) = &ws.agent_session {
+                    previous_ids.insert(session.id.clone());
+                }
+            }
+
+            // Update existing sessions by ID
+            let existing_sessions: Vec<AgentSession> = if !ws.agent_sessions.is_empty() {
+                ws.agent_sessions.clone()
+            } else if let Some(session) = &ws.agent_session {
+                vec![session.clone()]
+            } else {
+                vec![]
+            };
+
+            for current in existing_sessions {
+                if let Some(updated) = session_by_id.get(current.id.as_str()) {
+                    if current.status != updated.status {
+                        structure_changed = true;
+                    }
+                    seen_ids.insert(updated.id.clone());
+                    updated_sessions.push((*updated).clone());
+                } else {
+                    structure_changed = true;
+                }
+            }
+
+            // Add new sessions matching PR branch + repo
+            if let Some(pr) = &ws.github_pr {
+                if let Some(candidates) = session_by_branch.get(pr.branch.as_str()) {
+                    let repo_name = repo_name_from_hint(&pr.repo);
+                    for candidate in candidates {
+                        if (matches_repo_hint(candidate, repo_name)
+                            || candidate.working_directory.as_deref().is_none())
+                            && seen_ids.insert(candidate.id.clone())
+                        {
+                            updated_sessions.push((*candidate).clone());
+                            structure_changed = true;
+                        }
+                    }
+                }
+            }
+
+            // Identifier fallback (for issues without PR info)
+            if ws.github_pr.is_none() && !ws.linear_issue.identifier.is_empty() {
+                let identifier = ws.linear_issue.identifier.to_uppercase();
+                for candidate in sessions {
+                    if seen_ids.contains(&candidate.id) {
+                        continue;
+                    }
+                    if let Some(branch) = candidate.git_branch.as_deref() {
+                        if branch.to_uppercase().contains(&identifier) {
+                            seen_ids.insert(candidate.id.clone());
+                            updated_sessions.push(candidate.clone());
+                            structure_changed = true;
+                        }
+                    }
+                }
+            }
+
+            let new_ids: HashSet<String> = updated_sessions.iter().map(|s| s.id.clone()).collect();
+            if previous_ids != new_ids {
+                structure_changed = true;
+            }
+
+            ws.agent_sessions = updated_sessions;
+            ws.agent_session = pick_primary_session(&ws.agent_sessions);
+        }
+
+        if structure_changed {
+            self.rebuild_visual_items();
         }
     }
 
@@ -1004,7 +1237,7 @@ impl App {
             // Append them after scored results to keep relevance ordering intact.
             let mut included: HashSet<usize> = self.filtered_indices.iter().copied().collect();
             for (idx, ws) in self.state.workstreams.iter().enumerate() {
-                if ws.agent_session.is_some()
+                if (!ws.agent_sessions.is_empty() || ws.agent_session.is_some())
                     && ws.linear_issue.identifier.is_empty()
                     && included.insert(idx)
                 {
@@ -1027,6 +1260,7 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
         let mut pos = self.visual_selected;
         let steps = delta.unsigned_abs() as usize;
 
@@ -1046,17 +1280,38 @@ impl App {
         }
 
         self.visual_selected = pos;
+
+        // If selection changed, refresh the newly selected workstream's agent session
+        if pos != old_pos {
+            self.refresh_selected_agent_session();
+        }
+    }
+
+    /// Force refresh the agent session for the currently selected workstream
+    ///
+    /// This provides instant updates when navigating - shows the latest
+    /// watcher state immediately instead of waiting for the next tick.
+    fn refresh_selected_agent_session(&mut self) {
+        let Some(watcher) = &self.unified_watcher else {
+            return;
+        };
+
+        // Get fresh session snapshot and update workstreams
+        let sessions = watcher.get_sessions_snapshot();
+        self.update_agent_sessions_from_watcher(&sessions);
     }
 
     pub fn go_to_top(&mut self) {
         self.visual_selected = 0;
         self.snap_to_workstream(1);
+        self.refresh_selected_agent_session();
     }
 
     pub fn go_to_bottom(&mut self) {
         if !self.visual_items.is_empty() {
             self.visual_selected = self.visual_items.len() - 1;
             self.snap_to_workstream(-1);
+            self.refresh_selected_agent_session();
         }
     }
 
@@ -1075,15 +1330,23 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
+
         // Find next section header after current position
         for i in (self.visual_selected + 1)..len {
             if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
                 self.visual_selected = i;
+                if self.visual_selected != old_pos {
+                    self.refresh_selected_agent_session();
+                }
                 return;
             }
         }
         // If no section found, go to end
         self.visual_selected = len - 1;
+        if self.visual_selected != old_pos {
+            self.refresh_selected_agent_session();
+        }
     }
 
     /// Jump to previous section header
@@ -1092,15 +1355,23 @@ impl App {
             return;
         }
 
+        let old_pos = self.visual_selected;
+
         // Find previous section header before current position
         for i in (0..self.visual_selected).rev() {
             if matches!(self.visual_items.get(i), Some(VisualItem::SectionHeader(_))) {
                 self.visual_selected = i;
+                if self.visual_selected != old_pos {
+                    self.refresh_selected_agent_session();
+                }
                 return;
             }
         }
         // If no section found, go to start
         self.visual_selected = 0;
+        if self.visual_selected != old_pos {
+            self.refresh_selected_agent_session();
+        }
     }
 
     /// Scroll viewport by delta lines (vim Ctrl+e/y style)
@@ -1115,8 +1386,9 @@ impl App {
     pub fn toggle_section_fold(&mut self) {
         let section = match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
+            Some(VisualItem::AgentSession { .. }) => Some(SectionType::AgentSessions),
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
-                if ws.agent_session.is_some() {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
                     SectionType::AgentSessions
                 } else {
                     SectionType::Issues
@@ -1139,6 +1411,33 @@ impl App {
     pub fn selected_workstream(&self) -> Option<&Workstream> {
         match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx),
+            Some(VisualItem::AgentSession { ws_idx, .. }) => self.state.workstreams.get(*ws_idx),
+            _ => None,
+        }
+    }
+
+    /// Get the currently selected agent session (if any)
+    pub fn selected_agent_session(&self) -> Option<&AgentSession> {
+        match self.visual_items.get(self.visual_selected) {
+            Some(VisualItem::AgentSession {
+                ws_idx,
+                session_idx,
+            }) => self
+                .state
+                .workstreams
+                .get(*ws_idx)
+                .and_then(|ws| ws.agent_sessions.get(*session_idx))
+                .or_else(|| {
+                    self.state
+                        .workstreams
+                        .get(*ws_idx)
+                        .and_then(|ws| ws.agent_session.as_ref())
+                }),
+            Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).and_then(|ws| {
+                ws.agent_session
+                    .as_ref()
+                    .or_else(|| ws.agent_sessions.first())
+            }),
             _ => None,
         }
     }
@@ -1147,8 +1446,9 @@ impl App {
     pub fn selected_section(&self) -> Option<SectionType> {
         match self.visual_items.get(self.visual_selected) {
             Some(VisualItem::SectionHeader(section)) => Some(*section),
+            Some(VisualItem::AgentSession { .. }) => Some(SectionType::AgentSessions),
             Some(VisualItem::Workstream(idx)) => self.state.workstreams.get(*idx).map(|ws| {
-                if ws.agent_session.is_some() {
+                if !ws.agent_sessions.is_empty() || ws.agent_session.is_some() {
                     SectionType::AgentSessions
                 } else {
                     SectionType::Issues
@@ -1329,10 +1629,8 @@ impl App {
     }
 
     pub async fn teleport_to_session(&self) -> Result<()> {
-        if let Some(ws) = self.modal_issue() {
-            if let Some(session) = &ws.agent_session {
-                integrations::claude::focus_session_window(session).await?;
-            }
+        if let Some(session) = self.selected_agent_session() {
+            integrations::claude::focus_session_window(session).await?;
         }
         Ok(())
     }
@@ -1355,6 +1653,11 @@ impl App {
     /// Set the visible height for sub-issues (called by UI based on terminal size)
     pub fn set_sub_issues_visible_height(&mut self, height: usize) {
         self.sub_issues_visible_height = height.clamp(3, 10);
+    }
+
+    /// Set cached frame time (call once per render frame to avoid repeated syscalls)
+    pub fn set_frame_time(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        self.frame_now = now;
     }
 
     /// Navigate to next item in link menu (parent → children cycle)
@@ -1769,6 +2072,13 @@ impl App {
 
     /// Apply filters to create filtered_indices
     pub fn apply_filters(&mut self) {
+        // Pre-build project name → ID lookup map (O(1) instead of O(n) per workstream)
+        let project_name_to_id: HashMap<&str, &str> = self
+            .available_projects
+            .iter()
+            .map(|p| (p.name.as_str(), p.id.as_str()))
+            .collect();
+
         self.filtered_indices = self
             .state
             .workstreams
@@ -1776,7 +2086,9 @@ impl App {
             .enumerate()
             .filter(|(_, ws)| {
                 // Always show unlinked agent sessions regardless of filters
-                if ws.agent_session.is_some() && ws.linear_issue.identifier.is_empty() {
+                if (!ws.agent_sessions.is_empty() || ws.agent_session.is_some())
+                    && ws.linear_issue.identifier.is_empty()
+                {
                     return true;
                 }
 
@@ -1813,21 +2125,13 @@ impl App {
                     return false;
                 }
 
-                // Project filter (empty = show all)
+                // Project filter (empty = show all) - O(1) lookup via pre-built map
                 if !self.filter_projects.is_empty() {
                     match &ws.linear_issue.project {
-                        Some(project_name) => {
-                            // Find project ID by name
-                            let project_id = self
-                                .available_projects
-                                .iter()
-                                .find(|p| &p.name == project_name)
-                                .map(|p| &p.id);
-                            match project_id {
-                                Some(id) if self.filter_projects.contains(id) => {}
-                                _ => return false,
-                            }
-                        }
+                        Some(project_name) => match project_name_to_id.get(project_name.as_str()) {
+                            Some(id) if self.filter_projects.contains(*id) => {}
+                            _ => return false,
+                        },
                         None => return false, // No project, filtered out
                     }
                 }

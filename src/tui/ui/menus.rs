@@ -318,4 +318,3 @@ fn render_priority_checkbox<'a>(
         Span::styled(format!("  {}", marker), style),
     ])
 }
-

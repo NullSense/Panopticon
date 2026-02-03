@@ -71,3 +71,38 @@ pub const ICON_UPDATED: &str = "󰦒"; // nf-md-calendar_edit
 pub const ICON_DOCUMENT: &str = "󰈚"; // nf-md-file_document
 pub const ICON_PARENT: &str = "󰁝"; // nf-md-arrow_up_bold
 pub const ICON_CHILDREN: &str = "󰁅"; // nf-md-arrow_down_bold
+
+// Tool activity icons (for agent status display)
+pub const TOOL_READ: &str = "󰈙"; // nf-md-file_document
+pub const TOOL_EDIT: &str = "󰏫"; // nf-md-pencil
+pub const TOOL_WRITE: &str = "󰈔"; // nf-md-file_plus
+pub const TOOL_BASH: &str = "󰆍"; // nf-md-console
+pub const TOOL_GREP: &str = "󰍉"; // nf-md-magnify
+pub const TOOL_GLOB: &str = "󰉋"; // nf-md-folder_search
+pub const TOOL_WEB: &str = "󰖟"; // nf-md-web
+pub const TOOL_TASK: &str = "󰜎"; // nf-md-robot_outline (subagent)
+pub const THINKING: &str = "󰇌"; // nf-md-brain (same as AGENT_RUNNING)
+
+// Tool activity ASCII fallbacks
+pub const TOOL_READ_ASCII: char = 'R';
+pub const TOOL_EDIT_ASCII: char = 'E';
+pub const TOOL_WRITE_ASCII: char = 'W';
+pub const TOOL_BASH_ASCII: char = '$';
+pub const TOOL_GREP_ASCII: char = '?';
+pub const TOOL_GLOB_ASCII: char = 'G';
+pub const TOOL_WEB_ASCII: char = '@';
+pub const TOOL_TASK_ASCII: char = 'T';
+pub const THINKING_ASCII: char = '*';
+
+// Permission mode badges
+pub const MODE_PLAN: &str = "󰙅"; // nf-md-map_marker_path
+pub const MODE_ACCEPT: &str = "󰄬"; // nf-md-check (same as done)
+pub const MODE_YOLO: &str = "󱐋"; // nf-md-lightning_bolt
+
+// Permission mode ASCII fallbacks
+#[allow(dead_code)]
+pub const MODE_PLAN_ASCII: char = 'P';
+#[allow(dead_code)]
+pub const MODE_ACCEPT_ASCII: char = 'A';
+#[allow(dead_code)]
+pub const MODE_YOLO_ASCII: char = 'Y';

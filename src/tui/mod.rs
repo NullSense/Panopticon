@@ -60,25 +60,25 @@ async fn run_app(
     let mut last_tick = std::time::Instant::now();
     let mut input_state = input::InputState::new();
 
-    loop {
-        // Update dynamic visible height for sub-issues based on terminal size
-        // This must match the calculation in ui.rs for rendering consistency
-        if let Ok(size) = terminal.size() {
-            // Modal inner height is approximately: total_height - borders(2) - other_ui_elements(~10)
-            // Sub-issues visible height is: inner_height.saturating_sub(12).clamp(3, 10)
-            // Simplified: (height - 12 - 12).clamp(3, 10) = (height - 24).clamp(3, 10)
-            let visible_height = (size.height.saturating_sub(24) as usize).clamp(3, 10);
-            app.set_sub_issues_visible_height(visible_height);
-        }
+    // Initial size calculation
+    if let Ok(size) = terminal.size() {
+        let visible_height = (size.height.saturating_sub(24) as usize).clamp(3, 10);
+        app.set_sub_issues_visible_height(visible_height);
+    }
 
+    loop {
+        // Cache current time once per frame to avoid repeated syscalls during render
+        app.set_frame_time(chrono::Utc::now());
         terminal.draw(|f| ui::draw(f, app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
 
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Resize(_width, _height) => {
-                    // Layout is updated on next draw iteration via terminal.size()
+                Event::Resize(_width, height) => {
+                    // Only recalculate on actual resize events (rare)
+                    let visible_height = (height.saturating_sub(24) as usize).clamp(3, 10);
+                    app.set_sub_issues_visible_height(visible_height);
                 }
                 Event::Key(key) => {
                     let msg = input::dispatch(app, &mut input_state, key);
@@ -105,6 +105,9 @@ async fn run_app(
 
             // Poll for background refresh results (non-blocking)
             app.poll_refresh();
+
+            // Poll unified watcher for real-time agent session updates
+            app.poll_unified_watcher();
 
             last_tick = std::time::Instant::now();
         }

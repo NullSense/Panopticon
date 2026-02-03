@@ -12,8 +12,8 @@
 
 pub mod icons;
 pub mod layout;
-mod modals;
 mod menus;
+mod modals;
 mod status;
 mod table;
 
@@ -21,7 +21,7 @@ mod table;
 pub use self::draw::draw;
 
 mod draw {
-    
+
     use super::menus::{draw_filter_menu, draw_sort_menu};
     use super::modals::{draw_description_modal, draw_link_menu, draw_links_popup};
     use super::status::{draw_help_popup, draw_status_bar};
