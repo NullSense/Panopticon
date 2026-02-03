@@ -9,7 +9,6 @@ use anyhow::Result;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
 
 /// Watcher that maintains current Claude sessions
@@ -26,8 +25,9 @@ impl ClaudeWatcher {
 
         // Initial load
         if let Ok(state) = read_state() {
-            if let Ok(mut guard) = sessions.write() {
-                *guard = sessions_from_state(&state);
+            match sessions.write() {
+                Ok(mut guard) => *guard = sessions_from_state(&state),
+                Err(e) => tracing::warn!("Claude sessions lock poisoned on init: {e}"),
             }
         }
 
@@ -79,9 +79,12 @@ impl ClaudeWatcher {
         // Only read state ONCE after draining all events
         if has_events {
             if let Ok(state) = read_state() {
-                if let Ok(mut guard) = self.sessions.write() {
-                    *guard = sessions_from_state(&state);
-                    return true;
+                match self.sessions.write() {
+                    Ok(mut guard) => {
+                        *guard = sessions_from_state(&state);
+                        return true;
+                    }
+                    Err(e) => tracing::warn!("Claude sessions lock poisoned on poll: {e}"),
                 }
             }
         }
@@ -101,72 +104,3 @@ impl ClaudeWatcher {
     }
 }
 
-/// Start background thread that watches for changes
-#[allow(dead_code)]
-pub fn spawn_watcher_thread() -> Arc<RwLock<Vec<AgentSession>>> {
-    let sessions = Arc::new(RwLock::new(Vec::new()));
-    let sessions_clone = sessions.clone();
-
-    thread::spawn(move || {
-        // Initial load
-        if let Ok(state) = read_state() {
-            if let Ok(mut guard) = sessions_clone.write() {
-                *guard = sessions_from_state(&state);
-            }
-        }
-
-        let (tx, rx) = channel();
-
-        let watcher_result = RecommendedWatcher::new(
-            move |res| {
-                let _ = tx.send(res);
-            },
-            Config::default().with_poll_interval(Duration::from_secs(1)),
-        );
-
-        let mut watcher = match watcher_result {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!("Failed to create file watcher: {}", e);
-                return;
-            }
-        };
-
-        // Watch the state file directory
-        if let Ok(path) = state_file_path() {
-            if let Some(parent) = path.parent() {
-                if let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive) {
-                    tracing::error!("Failed to watch state file: {}", e);
-                    return;
-                }
-            }
-        }
-
-        // Event loop
-        loop {
-            match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(Ok(_event)) => {
-                    // Reload state
-                    if let Ok(state) = read_state() {
-                        if let Ok(mut guard) = sessions_clone.write() {
-                            *guard = sessions_from_state(&state);
-                        }
-                    }
-                }
-                Ok(Err(_)) => {
-                    // Watcher error, continue
-                }
-                Err(_) => {
-                    // Timeout, check if we should reload anyway
-                    if let Ok(state) = read_state() {
-                        if let Ok(mut guard) = sessions_clone.write() {
-                            *guard = sessions_from_state(&state);
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    sessions
-}

@@ -112,7 +112,6 @@ pub fn generate_hook_entry(event: &str) -> Value {
 /// Add panopticon hook to a hooks object, replacing any existing panopticon hook
 pub fn add_panopticon_hook(hooks: &mut Value, hook_type: &str, event: &str) {
     let hook_entry = generate_hook_entry(event);
-    let expected_command = format!("panopticon internal-hook --event {}", event);
 
     if let Some(existing) = hooks.get_mut(hook_type) {
         if let Some(arr) = existing.as_array_mut() {
@@ -138,24 +137,8 @@ pub fn add_panopticon_hook(hooks: &mut Value, hook_type: &str, event: &str) {
                 !is_panopticon
             });
 
-            // Check if correct hook already exists after cleanup
-            let has_correct = arr.iter().any(|h| {
-                if let Some(hook_arr) = h.get("hooks").and_then(|h| h.as_array()) {
-                    hook_arr.iter().any(|inner| {
-                        inner
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|s| s == expected_command)
-                            .unwrap_or(false)
-                    })
-                } else {
-                    false
-                }
-            });
-
-            if !has_correct {
-                arr.push(hook_entry);
-            }
+            // Re-add the correct hook (old ones were just removed above)
+            arr.push(hook_entry);
         } else {
             // Hook type exists but is not an array, fix it
             tracing::warn!("Hook type {} was not an array, fixing", hook_type);

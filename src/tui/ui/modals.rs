@@ -866,7 +866,7 @@ pub fn draw_description_modal(f: &mut Frame, app: &App) {
     let content_width = inner.width.saturating_sub(2) as usize;
 
     let mut scroll_line = app.description_scroll + 1;
-    let lines: Vec<Line> = if let Some(ws) = app.selected_workstream() {
+    let lines: Vec<Line> = if let Some(ws) = app.modal_issue().or_else(|| app.selected_workstream()) {
         let issue = &ws.linear_issue;
         let mut lines = vec![
             Line::from(vec![

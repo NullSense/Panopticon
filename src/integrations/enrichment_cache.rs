@@ -363,10 +363,8 @@ pub async fn mark_github_rate_limited(
         } else {
             c.github_backoff_until = Some(Utc::now() + ChronoDuration::minutes(5));
         }
-    }
-
-    // Proactive: if remaining is very low, also back off briefly.
-    if remaining.is_some_and(|r| r <= 2) {
+    } else if remaining.is_some_and(|r| r > 0 && r <= 2) {
+        // Proactive: if remaining is very low (but not exhausted), back off briefly.
         c.github_backoff_until = Some(Utc::now() + ChronoDuration::minutes(1));
     }
 

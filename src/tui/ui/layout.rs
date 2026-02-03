@@ -18,9 +18,9 @@ fn get_padding(width: usize) -> &'static str {
     if width <= 100 {
         &PADDING[width]
     } else {
-        // Fallback for rare cases > 100 (should never happen in practice)
-        // This is still slower but avoids panics
-        Box::leak(Box::new(" ".repeat(width)))
+        // Clamp to the maximum pre-computed width to avoid leaking memory.
+        // Columns should never be wider than 100 chars in practice.
+        &PADDING[100]
     }
 }
 

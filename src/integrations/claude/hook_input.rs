@@ -77,11 +77,11 @@ impl HookInput {
     ///
     /// Uses a size cap to prevent memory exhaustion on malformed input.
     pub fn from_stdin() -> Option<Self> {
-        use std::io::Read;
+        use std::io::{IsTerminal, Read};
 
         // Bail early if stdin is a TTY (no piped input)
         // This prevents blocking when hook is run manually
-        if atty::is(atty::Stream::Stdin) {
+        if std::io::stdin().is_terminal() {
             return None;
         }
 
@@ -159,7 +159,7 @@ fn shorten_path(path: &str) -> String {
     };
 
     // If still too long, show just the filename
-    if shortened.len() > 50 {
+    if shortened.chars().count() > 50 {
         std::path::Path::new(path)
             .file_name()
             .map(|f| f.to_string_lossy().to_string())

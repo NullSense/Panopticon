@@ -77,8 +77,9 @@ impl UnifiedAgentWatcher {
 
         let merged = merge_sessions(claude_sessions, openclaw_sessions);
 
-        if let Ok(mut guard) = self.sessions.write() {
-            *guard = merged;
+        match self.sessions.write() {
+            Ok(mut guard) => *guard = merged,
+            Err(e) => tracing::warn!("Unified sessions lock poisoned: {e}"),
         }
     }
 

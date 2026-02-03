@@ -95,7 +95,7 @@ pub fn read_state() -> Result<ClaudeState> {
     }
 
     let file = File::open(&path)?;
-    file.lock_shared()?; // Shared lock for reading
+    file.lock_shared()?;
 
     let mut content = String::new();
     let mut reader = std::io::BufReader::new(&file);
@@ -114,18 +114,83 @@ pub fn read_state() -> Result<ClaudeState> {
 pub fn write_state(state: &ClaudeState) -> Result<()> {
     let path = state_file_path()?;
 
-    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let file = File::create(&path)?;
-    file.lock_exclusive()?; // Exclusive lock for writing
+    // Open without truncation, acquire lock, then truncate — prevents
+    // readers from seeing an empty file between truncation and lock.
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    file.lock_exclusive()?;
+
+    // Now truncate under the lock
+    file.set_len(0)?;
 
     let content = serde_json::to_string_pretty(state)?;
-    let mut writer = std::io::BufWriter::new(&file);
-    writer.write_all(content.as_bytes())?;
+    {
+        let mut writer = std::io::BufWriter::new(&file);
+        writer.write_all(content.as_bytes())?;
+        writer.flush()?;
+    }
+    // BufWriter is dropped, releasing the borrow on `file`
+    file.unlock()?;
 
+    Ok(())
+}
+
+/// Atomically read-modify-write the state file.
+///
+/// Holds an exclusive lock across the entire cycle to prevent TOCTOU races
+/// when multiple hook processes fire concurrently.
+fn read_modify_write<F>(modify: F) -> Result<()>
+where
+    F: FnOnce(&mut ClaudeState),
+{
+    use std::io::Seek;
+
+    let path = state_file_path()?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    file.lock_exclusive()?;
+
+    // Read under the lock
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+
+    let mut state: ClaudeState = if content.is_empty() {
+        ClaudeState::default()
+    } else {
+        serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse state: {}", e))?
+    };
+
+    // Modify in memory
+    modify(&mut state);
+
+    // Write back under the same lock
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+
+    let new_content = serde_json::to_string_pretty(&state)?;
+    {
+        let mut writer = std::io::BufWriter::new(&file);
+        writer.write_all(new_content.as_bytes())?;
+        writer.flush()?;
+    }
+    // BufWriter is dropped, releasing the borrow on `file`
     file.unlock()?;
 
     Ok(())
@@ -170,54 +235,51 @@ pub fn update_session_with_activity(
     status: &str,
     activity_update: Option<ActivityUpdate>,
 ) -> Result<()> {
-    let mut state = read_state().unwrap_or_default();
+    let session_id = session_id.to_string();
+    let path = path.to_string();
+    let git_branch = git_branch.map(|s| s.to_string());
+    let status = status.to_string();
 
-    let now = Utc::now().timestamp();
+    read_modify_write(move |state| {
+        let now = Utc::now().timestamp();
 
-    if status == "stop" {
-        // Mark as done but keep the session
-        if let Some(session) = state.sessions.get_mut(session_id) {
-            session.status = "done".to_string();
+        if status == "stop" {
+            // Mark as done but keep the session
+            if let Some(session) = state.sessions.get_mut(&session_id) {
+                session.status = "done".to_string();
+                session.last_active = now;
+                session.activity.current_tool = None;
+                session.activity.current_target = None;
+                if git_branch.is_some() {
+                    session.git_branch = git_branch.clone();
+                }
+            }
+        } else {
+            let session = state
+                .sessions
+                .entry(session_id.clone())
+                .or_insert_with(|| ClaudeSessionState {
+                    path: path.clone(),
+                    git_branch: git_branch.clone(),
+                    status: status.clone(),
+                    last_active: now,
+                    activity: ClaudeActivityState::default(),
+                });
+
+            session.path = path.clone();
+            session.git_branch = git_branch.clone();
+            session.status = status.clone();
             session.last_active = now;
-            // Clear current tool on stop
-            session.activity.current_tool = None;
-            session.activity.current_target = None;
-            // Update git_branch if provided (in case branch changed)
-            if git_branch.is_some() {
-                session.git_branch = git_branch.map(|s| s.to_string());
+
+            if let Some(update) = activity_update {
+                apply_activity_update(&mut session.activity, &update, now);
             }
         }
-    } else {
-        // Get or create session
-        let session = state
-            .sessions
-            .entry(session_id.to_string())
-            .or_insert_with(|| ClaudeSessionState {
-                path: path.to_string(),
-                git_branch: git_branch.map(|s| s.to_string()),
-                status: status.to_string(),
-                last_active: now,
-                activity: ClaudeActivityState::default(),
-            });
 
-        // Update basic fields
-        session.path = path.to_string();
-        // Always refresh git branch to catch user branch switches
-        session.git_branch = git_branch.map(|s| s.to_string());
-        session.status = status.to_string();
-        session.last_active = now;
-
-        // Apply activity update if provided
-        if let Some(update) = activity_update {
-            apply_activity_update(&mut session.activity, &update, now);
-        }
-    }
-
-    // Clean up old sessions (older than 7 days)
-    let cutoff = now - (7 * 86400);
-    state.sessions.retain(|_, s| s.last_active > cutoff);
-
-    write_state(&state)
+        // Clean up old sessions (older than 7 days)
+        let cutoff = now - (7 * 86400);
+        state.sessions.retain(|_, s| s.last_active > cutoff);
+    })
 }
 
 /// Apply an activity update to the session's activity state
@@ -334,7 +396,7 @@ pub fn sessions_from_state(state: &ClaudeState) -> Vec<AgentSession> {
     by_path
         .into_values()
         .map(|(id, s)| {
-            // Mark as Done if no activity in 30 minutes (likely closed without Stop hook)
+            // Mark as Done if no activity in 60 minutes (likely closed without Stop hook)
             let is_stale = now - s.last_active > stale_threshold;
             let status = match s.status.as_str() {
                 "running" | "start" | "active" if is_stale => AgentStatus::Done,

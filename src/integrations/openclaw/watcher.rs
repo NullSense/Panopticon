@@ -65,8 +65,9 @@ impl OpenClawWatcher {
 
         // Initial load
         let initial = load_all_sessions(path);
-        if let Ok(mut guard) = sessions.write() {
-            *guard = initial;
+        match sessions.write() {
+            Ok(mut guard) => *guard = initial,
+            Err(e) => tracing::warn!("OpenClaw sessions lock poisoned on init: {e}"),
         }
 
         let (tx, rx) = channel();
@@ -110,9 +111,12 @@ impl OpenClawWatcher {
 
         if has_events {
             let new_sessions = load_all_sessions(&self.watch_path);
-            if let Ok(mut guard) = self.sessions.write() {
-                *guard = new_sessions;
-                return true;
+            match self.sessions.write() {
+                Ok(mut guard) => {
+                    *guard = new_sessions;
+                    return true;
+                }
+                Err(e) => tracing::warn!("OpenClaw sessions lock poisoned on poll: {e}"),
             }
         }
 

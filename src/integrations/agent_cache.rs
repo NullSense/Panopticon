@@ -6,9 +6,13 @@
 //! - After: 100 issues = 1 file read for Claude + 1 directory scan for OpenClaw
 
 use crate::data::{AgentSession, AgentStatus, AgentType};
+use once_cell::sync::Lazy;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+static ISSUE_ID_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(?i)([A-Z]{2,5}-\d+)").unwrap());
 
 /// Pre-loaded agent session cache for a single refresh cycle.
 ///
@@ -34,9 +38,8 @@ pub struct AgentSessionCache {
 ///
 /// Returns uppercase identifier for case-insensitive matching.
 fn extract_issue_id(branch: &str) -> Option<String> {
-    // Match pattern like DRE-123, ABC-456, etc. (case-insensitive)
-    let re = regex::Regex::new(r"(?i)([A-Z]{2,5}-\d+)").ok()?;
-    re.captures(branch)
+    ISSUE_ID_RE
+        .captures(branch)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().to_uppercase())
 }

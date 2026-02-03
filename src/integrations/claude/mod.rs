@@ -32,14 +32,23 @@ pub async fn find_session_for_directory(dir: Option<&str>) -> Option<AgentSessio
         .find(|s| s.working_directory.as_deref() == Some(dir))
 }
 
+/// Sanitize a string for safe inclusion in a PowerShell `-like` pattern.
+/// Removes characters that could be used for injection.
+fn sanitize_for_powershell(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
+        .collect()
+}
+
 /// Focus the terminal window for a Claude session (WSL + Windows)
 pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
-    // Use PowerShell to focus the Alacritty window
-    let search_term = session
+    let raw_term = session
         .working_directory
         .as_ref()
         .and_then(|d| d.split('/').next_back())
         .unwrap_or(&session.id);
+
+    let search_term = sanitize_for_powershell(raw_term);
 
     let script = format!(
         r#"
@@ -100,15 +109,7 @@ pub fn handle_hook(
     cwd: &str,
     input: Option<&hook_input::HookInput>,
 ) -> Result<()> {
-    // Map hook events to status strings
-    let status = match event {
-        "start" => "running",
-        "prompt" | "active" => "running", // "active" for backwards compatibility
-        "tool_start" | "tool_done" | "tool_fail" => "running",
-        "subagent_start" | "subagent_stop" => "running",
-        "stop" => "stop", // update_session handles conversion to "done"
-        _ => "idle",
-    };
+    let status = event_to_status(event);
 
     // Capture git branch on every event (keeps branch in sync if user switches)
     let git_branch = get_git_branch(cwd);
