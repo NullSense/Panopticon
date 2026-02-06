@@ -366,7 +366,9 @@ impl App {
             Message::ToggleSectionFold => self.toggle_section_fold(),
             Message::OpenLinkMenu => self.open_link_menu(),
             Message::TeleportToSession => {
-                self.teleport_to_session().await?;
+                if let Err(e) = self.teleport_to_session().await {
+                    self.error_message = Some(format!("Failed to focus session: {}", e));
+                }
                 // Close modal and clear navigation if in link menu
                 if self.show_link_menu() {
                     self.modal = ModalState::None;
