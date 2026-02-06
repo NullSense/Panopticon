@@ -34,13 +34,13 @@ pub async fn find_session_for_directory(dir: Option<&str>) -> Option<AgentSessio
 
 /// Sanitize a string for safe inclusion in a PowerShell `-like` pattern.
 /// Removes characters that could be used for injection.
+#[cfg(not(target_os = "macos"))]
 fn sanitize_for_powershell(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
         .collect()
 }
 
-/// Focus the terminal window for a Claude session (WSL + Windows)
 pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
     let raw_term = session
         .working_directory
@@ -48,34 +48,72 @@ pub async fn focus_session_window(session: &AgentSession) -> Result<()> {
         .and_then(|d| d.split('/').next_back())
         .unwrap_or(&session.id);
 
-    let search_term = sanitize_for_powershell(raw_term);
+    #[cfg(target_os = "macos")]
+    {
+        let search_term = raw_term.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"
+            tell application "System Events"
+                set matchedWindow to missing value
+                repeat with proc in (every process whose background only is false)
+                    repeat with w in windows of proc
+                        if name of w contains "{}" then
+                            set matchedWindow to w
+                            set frontmost of proc to true
+                            try
+                                perform action "AXRaise" of w
+                            end try
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end tell
+            "#,
+            search_term
+        );
 
-    let script = format!(
-        r#"
-        Add-Type @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class Win32 {{
-            [DllImport("user32.dll")]
-            public static extern bool SetForegroundWindow(IntPtr hWnd);
-        }}
+        let output = tokio::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to focus window: {}", stderr);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let search_term = sanitize_for_powershell(raw_term);
+
+        let script = format!(
+            r#"
+            Add-Type @"
+            using System;
+            using System.Runtime.InteropServices;
+            public class Win32 {{
+                [DllImport("user32.dll")]
+                public static extern bool SetForegroundWindow(IntPtr hWnd);
+            }}
 "@
-        $procs = Get-Process | Where-Object {{ $_.MainWindowTitle -like "*{}*" }}
-        if ($procs) {{
-            [Win32]::SetForegroundWindow($procs[0].MainWindowHandle)
-        }}
-        "#,
-        search_term
-    );
+            $procs = Get-Process | Where-Object {{ $_.MainWindowTitle -like "*{}*" }}
+            if ($procs) {{
+                [Win32]::SetForegroundWindow($procs[0].MainWindowHandle)
+            }}
+            "#,
+            search_term
+        );
 
-    let output = tokio::process::Command::new("powershell.exe")
-        .args(["-Command", &script])
-        .output()
-        .await?;
+        let output = tokio::process::Command::new("powershell.exe")
+            .args(["-Command", &script])
+            .output()
+            .await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to focus window: {}", stderr);
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to focus window: {}", stderr);
+        }
     }
 
     Ok(())
