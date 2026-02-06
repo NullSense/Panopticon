@@ -27,9 +27,12 @@ pub async fn fetch_pr_from_url(config: &Config, pr_url: &str) -> Result<GitHubPR
 
     // If we are in backoff, serve stale cached value if available.
     if enrichment_cache::github_should_backoff(config).await {
-        if let Some((pr, _fresh)) =
-            enrichment_cache::get_cached_github_pr(config, &key, config.polling.github_interval_secs)
-                .await
+        if let Some((pr, _fresh)) = enrichment_cache::get_cached_github_pr(
+            config,
+            &key,
+            config.polling.github_interval_secs,
+        )
+        .await
         {
             return Ok(pr);
         }
@@ -130,7 +133,10 @@ async fn fetch_pr_from_url_uncached(config: &Config, pr_url: &str) -> FetchOutco
         .map_err(anyhow_to_fetch_error)?;
 
     let repo_idx = parts.iter().position(|&s| s == "github.com").unwrap_or(0) + 1;
-    let owner = parts.get(repo_idx).context("Missing owner").map_err(anyhow_to_fetch_error)?;
+    let owner = parts
+        .get(repo_idx)
+        .context("Missing owner")
+        .map_err(anyhow_to_fetch_error)?;
     let repo = parts
         .get(repo_idx + 1)
         .context("Missing repo")
@@ -356,10 +362,7 @@ async fn fetch_pr_rest(
     }
 
     let reviews: Vec<serde_json::Value> = if reviews_response.status().is_success() {
-        reviews_response
-            .json()
-            .await
-            .unwrap_or_default()
+        reviews_response.json().await.unwrap_or_default()
     } else {
         vec![]
     };

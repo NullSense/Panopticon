@@ -194,6 +194,16 @@ pub enum Message {
     NavigateBack,
 
     // ─────────────────────────────────────────────────────────────────────────
+    // View switching
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Switch to a specific view by index
+    SwitchView(usize),
+    /// Cycle to the next view
+    NextView,
+    /// Cycle to the previous view
+    PrevView,
+
+    // ─────────────────────────────────────────────────────────────────────────
     // No-op
     // ─────────────────────────────────────────────────────────────────────────
     /// No operation (for unhandled keys or pending chords)

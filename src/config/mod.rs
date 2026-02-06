@@ -6,8 +6,32 @@ use std::path::{Path, PathBuf};
 // Main Config Structure
 // =============================================================================
 
+// =============================================================================
+// Per-View Configuration (multi-workspace support)
+// =============================================================================
+
+/// Per-view configuration for multi-workspace support.
+/// Each view can have its own tokens, Linear/GitHub/Vercel settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewConfig {
+    /// Display name for the view tab
+    pub name: String,
+    /// Per-view API tokens (overrides global tokens)
+    pub tokens: Tokens,
+    /// Per-view Linear settings
+    #[serde(default)]
+    pub linear: LinearConfig,
+    /// Per-view GitHub settings
+    #[serde(default)]
+    pub github: GithubConfig,
+    /// Per-view Vercel settings
+    #[serde(default)]
+    pub vercel: VercelConfig,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub tokens: Tokens,
     #[serde(default)]
     pub linear: LinearConfig,
@@ -23,15 +47,21 @@ pub struct Config {
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    /// Per-view configurations for multi-workspace support.
+    /// When empty, the top-level tokens/linear/github/vercel act as a single default view.
+    #[serde(default)]
+    pub views: Vec<ViewConfig>,
 }
 
 // =============================================================================
 // API Tokens
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Tokens {
+    #[serde(default)]
     pub linear: String,
+    #[serde(default)]
     pub github: String,
     #[serde(default)]
     pub vercel: Option<String>,
@@ -291,6 +321,51 @@ fn default_column_widths() -> [usize; 8] {
 }
 
 // =============================================================================
+// Multi-View Helpers
+// =============================================================================
+
+impl Config {
+    /// Returns the effective list of views.
+    /// If explicit `[[views]]` are configured, returns those.
+    /// Otherwise, synthesizes a single "Default" view from top-level fields.
+    pub fn effective_views(&self) -> Vec<ViewConfig> {
+        if self.views.is_empty() {
+            vec![ViewConfig {
+                name: "Default".to_string(),
+                tokens: self.tokens.clone(),
+                linear: self.linear.clone(),
+                github: self.github.clone(),
+                vercel: self.vercel.clone(),
+            }]
+        } else {
+            self.views.clone()
+        }
+    }
+
+    /// Produce a synthetic Config with view-specific tokens/linear/github/vercel
+    /// overlaid on the global polling/cache/ui/notifications settings.
+    /// This lets all existing integration functions work unchanged.
+    pub fn with_view(&self, view: &ViewConfig) -> Config {
+        Config {
+            tokens: view.tokens.clone(),
+            linear: view.linear.clone(),
+            github: view.github.clone(),
+            vercel: view.vercel.clone(),
+            polling: self.polling.clone(),
+            cache: self.cache.clone(),
+            notifications: self.notifications.clone(),
+            ui: self.ui.clone(),
+            views: vec![], // Synthetic config has no views
+        }
+    }
+
+    /// Returns true if multiple views are configured
+    pub fn has_multiple_views(&self) -> bool {
+        self.views.len() > 1
+    }
+}
+
+// =============================================================================
 // Path Utilities
 // =============================================================================
 
@@ -467,6 +542,7 @@ pub async fn init_wizard() -> Result<()> {
         cache: CacheConfig::default(),
         notifications: NotificationConfig::default(),
         ui: UiConfig::default(),
+        views: vec![],
     };
 
     // Create config directory

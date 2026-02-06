@@ -105,6 +105,14 @@ pub fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 format!("[{} active]", active_count),
                 Style::default().fg(Color::Green),
             ),
+            if app.view_configs.len() > 1 {
+                Span::styled(
+                    format!(" [{}]", app.active_view_config().name),
+                    Style::default().fg(Color::Cyan),
+                )
+            } else {
+                Span::raw("")
+            },
         ])
     };
 

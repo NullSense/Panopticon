@@ -79,6 +79,21 @@ pub fn load_cache(config: &Config) -> Result<Option<WorkstreamCache>> {
     load_cache_from_path(&path)
 }
 
+/// Load cache for a specific view (uses view-scoped cache file)
+pub fn load_cache_for_view(config: &Config, view_name: &str) -> Result<Option<WorkstreamCache>> {
+    if !config.cache.enabled {
+        return Ok(None);
+    }
+
+    let path = cache_path_for_view(config, view_name)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    load_cache_from_path(&path)
+}
+
 /// Load cache from a specific path (for testing)
 pub fn load_cache_from_path(path: &Path) -> Result<Option<WorkstreamCache>> {
     if !path.exists() {
@@ -111,6 +126,38 @@ pub fn save_cache(config: &Config, cache: &WorkstreamCache) -> Result<()> {
 
     let path = cache_path(config)?;
     save_cache_to_path(&path, cache)
+}
+
+/// Save cache for a specific view (uses view-scoped cache file)
+pub fn save_cache_for_view(
+    config: &Config,
+    view_name: &str,
+    cache: &WorkstreamCache,
+) -> Result<()> {
+    if !config.cache.enabled {
+        return Ok(());
+    }
+
+    let path = cache_path_for_view(config, view_name)?;
+    save_cache_to_path(&path, cache)
+}
+
+/// Get cache file path for a specific view.
+/// Sanitizes the view name for use as a filename.
+fn cache_path_for_view(_config: &Config, view_name: &str) -> Result<std::path::PathBuf> {
+    let sanitized: String = view_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase();
+    let filename = format!("workstreams_{}.json", sanitized);
+    Ok(crate::config::config_dir()?.join(filename))
 }
 
 /// Save cache to a specific path (for testing)

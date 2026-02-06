@@ -311,6 +311,8 @@ fn match_normal_mode(key: &KeyEvent) -> Option<Message> {
         KeyCode::Char('s') => Message::ToggleSortMenu,
         KeyCode::Char('f') => Message::ToggleFilterMenu,
         KeyCode::Char('R') => Message::ToggleResizeMode,
+        KeyCode::Tab => Message::NextView,
+        KeyCode::BackTab => Message::PrevView,
         _ => return None,
     })
 }

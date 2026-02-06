@@ -34,18 +34,39 @@ mod draw {
 
     /// Main draw function - renders the entire TUI.
     pub fn draw(f: &mut Frame, app: &App) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Header/search
-                Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Status bar
-            ])
-            .split(f.area());
+        let has_tabs = app.view_configs.len() > 1;
 
-        draw_header(f, app, chunks[0]);
-        draw_workstreams(f, app, chunks[1]);
-        draw_status_bar(f, app, chunks[2]);
+        let chunks = if has_tabs {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Header/search
+                    Constraint::Length(1), // Tab bar
+                    Constraint::Min(0),    // Main content
+                    Constraint::Length(1), // Status bar
+                ])
+                .split(f.area())
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Header/search
+                    Constraint::Min(0),    // Main content
+                    Constraint::Length(1), // Status bar
+                ])
+                .split(f.area())
+        };
+
+        if has_tabs {
+            draw_header(f, app, chunks[0]);
+            super::status::draw_view_tabs(f, app, chunks[1]);
+            draw_workstreams(f, app, chunks[2]);
+            draw_status_bar(f, app, chunks[3]);
+        } else {
+            draw_header(f, app, chunks[0]);
+            draw_workstreams(f, app, chunks[1]);
+            draw_status_bar(f, app, chunks[2]);
+        }
 
         // Overlays
         if app.show_help() {

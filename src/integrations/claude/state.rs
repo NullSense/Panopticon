@@ -255,16 +255,17 @@ pub fn update_session_with_activity(
                 }
             }
         } else {
-            let session = state
-                .sessions
-                .entry(session_id.clone())
-                .or_insert_with(|| ClaudeSessionState {
-                    path: path.clone(),
-                    git_branch: git_branch.clone(),
-                    status: status.clone(),
-                    last_active: now,
-                    activity: ClaudeActivityState::default(),
-                });
+            let session =
+                state
+                    .sessions
+                    .entry(session_id.clone())
+                    .or_insert_with(|| ClaudeSessionState {
+                        path: path.clone(),
+                        git_branch: git_branch.clone(),
+                        status: status.clone(),
+                        last_active: now,
+                        activity: ClaudeActivityState::default(),
+                    });
 
             session.path = path.clone();
             session.git_branch = git_branch.clone();

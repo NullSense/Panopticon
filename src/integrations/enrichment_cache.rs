@@ -103,7 +103,12 @@ where
                     Some(Entry::Loading { notify }) => Some(Arc::clone(notify)),
                     None => {
                         let notify = Arc::new(Notify::new());
-                        guard.insert(key.clone(), Entry::Loading { notify: notify.clone() });
+                        guard.insert(
+                            key.clone(),
+                            Entry::Loading {
+                                notify: notify.clone(),
+                            },
+                        );
                         // We are the leader.
                         drop(guard);
 
@@ -212,7 +217,8 @@ fn save_to_path(path: &Path, cache: &PersistedEnrichmentCache) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let content = serde_json::to_string_pretty(cache).context("Failed to serialize enrichment cache")?;
+    let content =
+        serde_json::to_string_pretty(cache).context("Failed to serialize enrichment cache")?;
     std::fs::write(path, content)
         .with_context(|| format!("Failed to write enrichment cache to {}", path.display()))?;
     Ok(())
@@ -267,15 +273,11 @@ pub fn vercel_key(repo: &str, branch: &str) -> String {
 }
 
 fn github_in_backoff(cache: &PersistedEnrichmentCache) -> bool {
-    cache
-        .github_backoff_until
-        .is_some_and(|t| t > Utc::now())
+    cache.github_backoff_until.is_some_and(|t| t > Utc::now())
 }
 
 fn vercel_in_backoff(cache: &PersistedEnrichmentCache) -> bool {
-    cache
-        .vercel_backoff_until
-        .is_some_and(|t| t > Utc::now())
+    cache.vercel_backoff_until.is_some_and(|t| t > Utc::now())
 }
 
 pub async fn github_should_backoff(config: &Config) -> bool {

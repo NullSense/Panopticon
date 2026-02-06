@@ -1,4 +1,7 @@
-use panopticon::config::{CacheConfig, Config, GithubConfig, LinearConfig, NotificationConfig, PollingConfig, Tokens, UiConfig, VercelConfig};
+use panopticon::config::{
+    CacheConfig, Config, GithubConfig, LinearConfig, NotificationConfig, PollingConfig, Tokens,
+    UiConfig, VercelConfig,
+};
 use panopticon::data::{GitHubPR, GitHubPRStatus, VercelDeployment, VercelStatus};
 use panopticon::integrations::enrichment_cache;
 
@@ -23,6 +26,7 @@ fn test_config() -> Config {
         },
         notifications: NotificationConfig::default(),
         ui: UiConfig::default(),
+        views: vec![],
     }
 }
 

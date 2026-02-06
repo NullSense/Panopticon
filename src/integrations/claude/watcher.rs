@@ -103,4 +103,3 @@ impl ClaudeWatcher {
         self.sessions.read().map(|g| g.clone()).unwrap_or_default()
     }
 }
-

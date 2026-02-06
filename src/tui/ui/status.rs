@@ -313,6 +313,42 @@ pub fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+/// Draw the view tab bar (only shown when multiple views are configured).
+pub fn draw_view_tabs(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans = Vec::new();
+    spans.push(Span::styled(" ", Style::default()));
+
+    for (i, vc) in app.view_configs.iter().enumerate() {
+        let is_active = i == app.active_view;
+        let is_loading = if is_active {
+            app.is_loading
+        } else {
+            app.view_is_loading.get(i).copied().unwrap_or(false)
+        };
+
+        let label = format!(" {} {} ", i + 1, vc.name);
+
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if is_loading {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        spans.push(Span::styled(label, style));
+        if i + 1 < app.view_configs.len() {
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        }
+    }
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line);
+    f.render_widget(paragraph, area);
+}
+
 /// Draw the help popup.
 pub fn draw_help_popup(f: &mut Frame, app: &App) {
     use crate::tui::keybindings::generate_keyboard_shortcuts;
@@ -353,6 +389,15 @@ pub fn draw_help_popup(f: &mut Frame, app: &App) {
     for line in content {
         lines.push(Line::from(line));
     }
+    // Add multi-view hint if applicable
+    if app.view_configs.len() > 1 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Tab/Shift+Tab: switch views",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
     lines.push(Line::from(Span::styled(
         "  Press 1: Shortcuts | 2: Status Legend | Esc: Close",
         Style::default().fg(Color::DarkGray),

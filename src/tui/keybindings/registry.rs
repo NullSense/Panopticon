@@ -213,6 +213,23 @@ pub static BINDINGS: &[KeyBinding] = &[
         alternatives: &[],
         show_in_help: true,
     },
+    // View switching
+    KeyBinding {
+        modes: &[Mode::Normal],
+        pattern: KeyPattern::Single(KeyCode::Tab),
+        description: "Next view",
+        category: Category::Navigation,
+        alternatives: &[],
+        show_in_help: true,
+    },
+    KeyBinding {
+        modes: &[Mode::Normal],
+        pattern: KeyPattern::Single(KeyCode::BackTab),
+        description: "Previous view",
+        category: Category::Navigation,
+        alternatives: &[],
+        show_in_help: true,
+    },
     // Application
     KeyBinding {
         modes: &[Mode::Normal],

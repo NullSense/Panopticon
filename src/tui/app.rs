@@ -1,5 +1,5 @@
 use crate::agents::UnifiedAgentWatcher;
-use crate::config::Config;
+use crate::config::{Config, ViewConfig};
 use crate::data::{
     AgentSession, AgentType, AppState, LinearChildRef, LinearCycle, LinearPriority, LinearStatus,
     SectionType, SortMode, VisualItem, Workstream,
@@ -145,6 +145,28 @@ impl ModalState {
     }
 }
 
+/// Captures all per-view state for save/restore on view switch.
+pub struct ViewSnapshot {
+    pub state: AppState,
+    pub filtered_indices: Vec<usize>,
+    pub visual_items: Vec<VisualItem>,
+    pub visual_selected: usize,
+    pub section_counts: HashMap<SectionType, usize>,
+    pub filter_cycles: HashSet<String>,
+    pub filter_priorities: HashSet<LinearPriority>,
+    pub filter_projects: HashSet<String>,
+    pub filter_assignees: HashSet<String>,
+    pub available_cycles: Vec<LinearCycle>,
+    pub available_projects: Vec<ProjectInfo>,
+    pub available_team_members: Vec<TeamMemberInfo>,
+    pub current_user_id: Option<String>,
+    pub show_sub_issues: bool,
+    pub show_completed: bool,
+    pub show_canceled: bool,
+    pub search_excerpts: HashMap<usize, SearchMatch>,
+    pub search_all: bool,
+}
+
 pub struct App {
     pub config: Arc<Config>,
     pub state: AppState,
@@ -212,6 +234,28 @@ pub struct App {
     unified_watcher: Option<UnifiedAgentWatcher>,
     /// Cached current time for render frame (avoids repeated syscalls)
     pub frame_now: chrono::DateTime<chrono::Utc>,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Multi-view state
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Effective view configs (from config.effective_views())
+    pub view_configs: Vec<ViewConfig>,
+    /// Per-view saved state snapshots
+    pub view_snapshots: Vec<ViewSnapshot>,
+    /// Currently active view index
+    pub active_view: usize,
+    /// Per-view refresh channels
+    pub view_refresh_rx: Vec<Option<mpsc::Receiver<RefreshResult>>>,
+    /// Per-view shadow workstreams (for background refresh)
+    pub view_shadow_workstreams: Vec<Vec<Workstream>>,
+    /// Per-view shadow metadata
+    pub view_shadow_metadata: Vec<Option<RefreshMetadata>>,
+    /// Per-view refresh start timestamps
+    pub view_refresh_started_at: Vec<Option<Instant>>,
+    /// Per-view refresh progress
+    pub view_refresh_progress: Vec<Option<RefreshProgress>>,
+    /// Per-view loading state
+    pub view_is_loading: Vec<bool>,
 }
 
 // Modal state accessors (backward-compatible interface)
@@ -257,13 +301,172 @@ impl App {
     }
 }
 
+// Multi-view methods
+impl App {
+    /// Get the active view's config
+    pub fn active_view_config(&self) -> &ViewConfig {
+        &self.view_configs[self.active_view]
+    }
+
+    /// Save current view state into snapshot
+    fn save_current_view(&mut self) {
+        let snapshot = &mut self.view_snapshots[self.active_view];
+        snapshot.state = std::mem::take(&mut self.state);
+        snapshot.filtered_indices = std::mem::take(&mut self.filtered_indices);
+        snapshot.visual_items = std::mem::take(&mut self.visual_items);
+        snapshot.visual_selected = self.visual_selected;
+        snapshot.section_counts = std::mem::take(&mut self.section_counts);
+        snapshot.filter_cycles = std::mem::take(&mut self.filter_cycles);
+        snapshot.filter_priorities = std::mem::take(&mut self.filter_priorities);
+        snapshot.filter_projects = std::mem::take(&mut self.filter_projects);
+        snapshot.filter_assignees = std::mem::take(&mut self.filter_assignees);
+        snapshot.available_cycles = std::mem::take(&mut self.available_cycles);
+        snapshot.available_projects = std::mem::take(&mut self.available_projects);
+        snapshot.available_team_members = std::mem::take(&mut self.available_team_members);
+        snapshot.current_user_id = self.current_user_id.take();
+        snapshot.show_sub_issues = self.show_sub_issues;
+        snapshot.show_completed = self.show_completed;
+        snapshot.show_canceled = self.show_canceled;
+        snapshot.search_excerpts = std::mem::take(&mut self.search_excerpts);
+        snapshot.search_all = self.search_all;
+
+        // Save per-view refresh state
+        self.view_refresh_rx[self.active_view] = self.refresh_rx.take();
+        self.view_shadow_workstreams[self.active_view] =
+            std::mem::take(&mut self.shadow_workstreams);
+        self.view_shadow_metadata[self.active_view] = self.shadow_metadata.take();
+        self.view_refresh_started_at[self.active_view] = self.refresh_started_at.take();
+        self.view_refresh_progress[self.active_view] = self.refresh_progress.take();
+        self.view_is_loading[self.active_view] = self.is_loading;
+    }
+
+    /// Restore view state from snapshot
+    fn restore_view(&mut self, view_id: usize) {
+        let snapshot = &mut self.view_snapshots[view_id];
+        self.state = std::mem::take(&mut snapshot.state);
+        self.filtered_indices = std::mem::take(&mut snapshot.filtered_indices);
+        self.visual_items = std::mem::take(&mut snapshot.visual_items);
+        self.visual_selected = snapshot.visual_selected;
+        self.section_counts = std::mem::take(&mut snapshot.section_counts);
+        self.filter_cycles = std::mem::take(&mut snapshot.filter_cycles);
+        self.filter_priorities = std::mem::take(&mut snapshot.filter_priorities);
+        self.filter_projects = std::mem::take(&mut snapshot.filter_projects);
+        self.filter_assignees = std::mem::take(&mut snapshot.filter_assignees);
+        self.available_cycles = std::mem::take(&mut snapshot.available_cycles);
+        self.available_projects = std::mem::take(&mut snapshot.available_projects);
+        self.available_team_members = std::mem::take(&mut snapshot.available_team_members);
+        self.current_user_id = snapshot.current_user_id.take();
+        self.show_sub_issues = snapshot.show_sub_issues;
+        self.show_completed = snapshot.show_completed;
+        self.show_canceled = snapshot.show_canceled;
+        self.search_excerpts = std::mem::take(&mut snapshot.search_excerpts);
+        self.search_all = snapshot.search_all;
+
+        // Restore per-view refresh state
+        self.refresh_rx = self.view_refresh_rx[view_id].take();
+        self.shadow_workstreams = std::mem::take(&mut self.view_shadow_workstreams[view_id]);
+        self.shadow_metadata = self.view_shadow_metadata[view_id].take();
+        self.refresh_started_at = self.view_refresh_started_at[view_id].take();
+        self.refresh_progress = self.view_refresh_progress[view_id].take();
+        self.is_loading = self.view_is_loading[view_id];
+    }
+
+    /// Switch to a different view by index
+    pub fn switch_view(&mut self, target: usize) {
+        if target >= self.view_configs.len() || target == self.active_view {
+            return;
+        }
+
+        // Close any open modals
+        self.modal = ModalState::None;
+        self.clear_navigation();
+
+        // Save current view
+        self.save_current_view();
+
+        // Switch
+        self.active_view = target;
+
+        // Restore target view
+        self.restore_view(target);
+
+        // Re-match agent sessions from watcher for the newly active view
+        if let Some(watcher) = &self.unified_watcher {
+            let sessions = watcher.get_sessions_snapshot();
+            self.update_agent_sessions_from_watcher(&sessions);
+        }
+    }
+
+    /// Cycle to the next view
+    pub fn next_view(&mut self) {
+        if self.view_configs.len() <= 1 {
+            return;
+        }
+        let next = (self.active_view + 1) % self.view_configs.len();
+        self.switch_view(next);
+    }
+
+    /// Cycle to the previous view
+    pub fn prev_view(&mut self) {
+        if self.view_configs.len() <= 1 {
+            return;
+        }
+        let prev = if self.active_view == 0 {
+            self.view_configs.len() - 1
+        } else {
+            self.active_view - 1
+        };
+        self.switch_view(prev);
+    }
+
+    /// Save cache for the active view (view-aware)
+    fn save_view_cache(&self) -> anyhow::Result<()> {
+        let ws_cache = cache::WorkstreamCache::new(self.state.workstreams.clone());
+        if self.config.has_multiple_views() {
+            cache::save_cache_for_view(
+                &self.config,
+                &self.view_configs[self.active_view].name,
+                &ws_cache,
+            )
+        } else {
+            cache::save_cache(&self.config, &ws_cache)
+        }
+    }
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
+        let view_configs = config.effective_views();
+        let view_count = view_configs.len();
         let config = Arc::new(config);
         let mut state = AppState::default();
         if let Some(mode) = SortMode::from_config_str(&config.ui.default_sort) {
             state.sort_mode = mode;
         }
+
+        // Initialize per-view snapshots (empty, will be populated on first switch)
+        let view_snapshots: Vec<ViewSnapshot> = (0..view_count)
+            .map(|_| ViewSnapshot {
+                state: AppState::default(),
+                filtered_indices: vec![],
+                visual_items: vec![],
+                visual_selected: 0,
+                section_counts: HashMap::new(),
+                filter_cycles: HashSet::new(),
+                filter_priorities: HashSet::new(),
+                filter_projects: HashSet::new(),
+                filter_assignees: HashSet::new(),
+                available_cycles: Vec::new(),
+                available_projects: Vec::new(),
+                available_team_members: Vec::new(),
+                current_user_id: None,
+                show_sub_issues: config.ui.show_sub_issues,
+                show_completed: config.ui.show_completed,
+                show_canceled: config.ui.show_canceled,
+                search_excerpts: HashMap::new(),
+                search_all: false,
+            })
+            .collect();
 
         let mut app = Self {
             config: Arc::clone(&config),
@@ -277,7 +480,6 @@ impl App {
             error_message: None,
             is_loading: false,
             spinner_frame: 0,
-            // Default widths: Status=1, Priority=3, ID=10, Title=26, PR=12, Agent=10, Vercel=3, Time=6
             column_widths: config.ui.column_widths,
             resize_column_idx: COL_IDX_TITLE,
             search_all: false,
@@ -298,7 +500,7 @@ impl App {
             issue_navigation_stack: Vec::new(),
             modal_issue_id: None,
             sub_issues_scroll: 0,
-            sub_issues_visible_height: 8, // Default, UI updates based on terminal size
+            sub_issues_visible_height: 8,
             description_scroll: 0,
             modal_search_mode: false,
             modal_search_query: String::new(),
@@ -309,6 +511,16 @@ impl App {
             refresh_started_at: None,
             unified_watcher: UnifiedAgentWatcher::new().ok(),
             frame_now: chrono::Utc::now(),
+            // Multi-view state
+            view_configs,
+            view_snapshots,
+            active_view: 0,
+            view_refresh_rx: (0..view_count).map(|_| None).collect(),
+            view_shadow_workstreams: (0..view_count).map(|_| Vec::new()).collect(),
+            view_shadow_metadata: (0..view_count).map(|_| None).collect(),
+            view_refresh_started_at: (0..view_count).map(|_| None).collect(),
+            view_refresh_progress: (0..view_count).map(|_| None).collect(),
+            view_is_loading: (0..view_count).map(|_| false).collect(),
         };
 
         app.load_cached_state();
@@ -318,17 +530,46 @@ impl App {
     /// Load cached workstreams on startup (if enabled).
     /// Cached data is marked as stale until the first refresh completes.
     fn load_cached_state(&mut self) {
-        let Ok(Some(cache_data)) = cache::load_cache(&self.config) else {
-            return;
-        };
+        if self.config.has_multiple_views() {
+            // Multi-view: load cache for active view (view 0 on startup)
+            let view_name = self.view_configs[self.active_view].name.clone();
+            let Ok(Some(cache_data)) = cache::load_cache_for_view(&self.config, &view_name) else {
+                return;
+            };
+            let mut workstreams = cache_data.workstreams;
+            for ws in &mut workstreams {
+                ws.stale = true;
+            }
+            self.state.workstreams = workstreams;
+            self.state.last_refresh = Some(cache_data.last_sync);
 
-        let mut workstreams = cache_data.workstreams;
-        for ws in &mut workstreams {
-            ws.stale = true;
+            // Also load caches into snapshots for other views
+            for (i, vc) in self.view_configs.iter().enumerate() {
+                if i == self.active_view {
+                    continue;
+                }
+                if let Ok(Some(cache_data)) = cache::load_cache_for_view(&self.config, &vc.name) {
+                    let mut workstreams = cache_data.workstreams;
+                    for ws in &mut workstreams {
+                        ws.stale = true;
+                    }
+                    self.view_snapshots[i].state.workstreams = workstreams;
+                    self.view_snapshots[i].state.last_refresh = Some(cache_data.last_sync);
+                }
+            }
+        } else {
+            // Single-view: use existing cache path
+            let Ok(Some(cache_data)) = cache::load_cache(&self.config) else {
+                return;
+            };
+            let mut workstreams = cache_data.workstreams;
+            for ws in &mut workstreams {
+                ws.stale = true;
+            }
+            self.state.workstreams = workstreams;
+            self.state.last_refresh = Some(cache_data.last_sync);
         }
 
-        self.state.workstreams = workstreams;
-        self.state.last_refresh = Some(cache_data.last_sync);
         self.update_available_cycles();
         self.calculate_optimal_widths();
         self.apply_filters();
@@ -538,6 +779,13 @@ impl App {
             }
 
             // ─────────────────────────────────────────────────────────────────
+            // View switching
+            // ─────────────────────────────────────────────────────────────────
+            Message::SwitchView(idx) => self.switch_view(idx),
+            Message::NextView => self.next_view(),
+            Message::PrevView => self.prev_view(),
+
+            // ─────────────────────────────────────────────────────────────────
             // No-op
             // ─────────────────────────────────────────────────────────────────
             Message::None => {}
@@ -648,11 +896,18 @@ impl App {
     pub async fn refresh(&mut self) -> Result<()> {
         self.is_loading = true;
 
+        // Use per-view config if multiple views
+        let config: Arc<Config> = if self.config.has_multiple_views() {
+            Arc::new(self.config.with_view(self.active_view_config()))
+        } else {
+            Arc::clone(&self.config)
+        };
+
         let (workstreams_res, projects_res, members_res, current_user_res) = tokio::join!(
-            integrations::fetch_workstreams(&self.config),
-            integrations::linear::fetch_projects(&self.config),
-            integrations::linear::fetch_team_members(&self.config),
-            integrations::linear::fetch_current_user_id(&self.config)
+            integrations::fetch_workstreams(&config),
+            integrations::linear::fetch_projects(&config),
+            integrations::linear::fetch_team_members(&config),
+            integrations::linear::fetch_current_user_id(&config)
         );
 
         match workstreams_res {
@@ -681,10 +936,7 @@ impl App {
                 self.rebuild_visual_items();
                 self.error_message = None;
 
-                if let Err(err) = cache::save_cache(
-                    &self.config,
-                    &cache::WorkstreamCache::new(self.state.workstreams.clone()),
-                ) {
+                if let Err(err) = self.save_view_cache() {
                     tracing::debug!("Failed to save cache: {}", err);
                 }
             }
@@ -722,7 +974,12 @@ impl App {
         let (tx, rx) = mpsc::channel(100);
         self.refresh_rx = Some(rx);
 
-        let config = Arc::clone(&self.config);
+        // Use per-view config if multiple views, otherwise use global config
+        let config = if self.config.has_multiple_views() {
+            Arc::new(self.config.with_view(self.active_view_config()))
+        } else {
+            Arc::clone(&self.config)
+        };
 
         // Spawn background task
         tokio::spawn(async move {
@@ -874,10 +1131,7 @@ impl App {
                     self.rebuild_visual_items();
                     self.error_message = None;
 
-                    if let Err(err) = cache::save_cache(
-                        &self.config,
-                        &cache::WorkstreamCache::new(self.state.workstreams.clone()),
-                    ) {
+                    if let Err(err) = self.save_view_cache() {
                         tracing::debug!("Failed to save cache: {}", err);
                     }
                     completed = true;
@@ -1037,6 +1291,9 @@ impl App {
         // Advance spinner animation
         self.tick_spinner();
 
+        // Poll refresh channels for inactive views (drain results into snapshots)
+        self.poll_inactive_view_refreshes();
+
         // Periodic background refresh based on polling interval
         if tokio::runtime::Handle::try_current().is_ok() && self.refresh_rx.is_none() {
             let interval_secs = self
@@ -1058,6 +1315,118 @@ impl App {
                 if should_refresh {
                     self.start_background_refresh();
                 }
+            }
+        }
+    }
+
+    /// Poll refresh channels for inactive views.
+    /// Drains completed results into snapshots so they're ready when switching.
+    fn poll_inactive_view_refreshes(&mut self) {
+        for view_id in 0..self.view_configs.len() {
+            if view_id == self.active_view {
+                continue; // Active view is polled by poll_refresh()
+            }
+
+            let Some(mut rx) = self.view_refresh_rx[view_id].take() else {
+                continue;
+            };
+
+            let mut should_restore = true;
+
+            // Check for timeout
+            if let Some(started) = self.view_refresh_started_at[view_id] {
+                if started.elapsed() > REFRESH_TIMEOUT {
+                    self.view_shadow_workstreams[view_id].clear();
+                    self.view_shadow_metadata[view_id] = None;
+                    self.view_refresh_started_at[view_id] = None;
+                    self.view_refresh_progress[view_id] = None;
+                    self.view_is_loading[view_id] = false;
+                    continue; // Don't restore rx
+                }
+            }
+
+            while let Ok(result) = rx.try_recv() {
+                match result {
+                    RefreshResult::Progress(progress) => {
+                        if let Some(ref mut p) = self.view_refresh_progress[view_id] {
+                            p.total_issues = progress.total_issues;
+                            p.current_stage = progress.current_stage;
+                        } else {
+                            self.view_refresh_progress[view_id] = Some(progress);
+                        }
+                    }
+                    RefreshResult::Workstream(ws) => {
+                        // Update snapshot workstreams
+                        let snapshot = &mut self.view_snapshots[view_id];
+                        let issue_id = &ws.linear_issue.id;
+                        if let Some(existing) = snapshot
+                            .state
+                            .workstreams
+                            .iter_mut()
+                            .find(|w| w.linear_issue.id == *issue_id)
+                        {
+                            *existing = *ws.clone();
+                        } else {
+                            snapshot.state.workstreams.push(*ws.clone());
+                        }
+                        self.view_shadow_workstreams[view_id].push(*ws);
+                        if let Some(ref mut p) = self.view_refresh_progress[view_id] {
+                            p.completed = self.view_shadow_workstreams[view_id].len();
+                        }
+                    }
+                    RefreshResult::Metadata(metadata) => {
+                        self.view_shadow_metadata[view_id] = Some(metadata);
+                    }
+                    RefreshResult::Complete => {
+                        let snapshot = &mut self.view_snapshots[view_id];
+                        // Reconcile: remove items not in shadow
+                        let shadow_ids: HashSet<&str> = self.view_shadow_workstreams[view_id]
+                            .iter()
+                            .map(|ws| ws.linear_issue.id.as_str())
+                            .collect();
+                        snapshot.state.workstreams.retain(|ws| {
+                            shadow_ids.contains(ws.linear_issue.id.as_str())
+                                || ws.linear_issue.id.is_empty()
+                        });
+                        self.view_shadow_workstreams[view_id].clear();
+
+                        if let Some(metadata) = self.view_shadow_metadata[view_id].take() {
+                            if let Some(projects) = metadata.projects {
+                                snapshot.available_projects = projects;
+                            }
+                            if let Some(members) = metadata.team_members {
+                                snapshot.available_team_members = members;
+                            }
+                            if let Some(user_id) = metadata.current_user_id {
+                                snapshot.current_user_id = Some(user_id);
+                            }
+                        }
+
+                        snapshot.state.last_refresh = Some(Utc::now());
+                        self.view_refresh_started_at[view_id] = None;
+                        self.view_refresh_progress[view_id] = None;
+                        self.view_is_loading[view_id] = false;
+                        should_restore = false;
+                    }
+                    RefreshResult::Error(_) => {
+                        self.view_shadow_workstreams[view_id].clear();
+                        self.view_shadow_metadata[view_id] = None;
+                        self.view_refresh_started_at[view_id] = None;
+                        self.view_refresh_progress[view_id] = None;
+                        self.view_is_loading[view_id] = false;
+                        should_restore = false;
+                    }
+                }
+            }
+
+            if rx.is_closed() && should_restore {
+                self.view_shadow_workstreams[view_id].clear();
+                self.view_shadow_metadata[view_id] = None;
+                self.view_refresh_started_at[view_id] = None;
+                self.view_refresh_progress[view_id] = None;
+                self.view_is_loading[view_id] = false;
+            } else if should_restore {
+                self.view_refresh_rx[view_id] = Some(rx);
             }
         }
     }

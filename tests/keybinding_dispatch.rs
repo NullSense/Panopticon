@@ -30,6 +30,7 @@ fn test_config() -> Config {
         cache: CacheConfig::default(),
         notifications: NotificationConfig::default(),
         ui: UiConfig::default(),
+        views: vec![],
     }
 }
 
